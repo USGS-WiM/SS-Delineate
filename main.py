@@ -2,6 +2,7 @@
 import argparse
 import sys
 from osgeo import ogr, gdal
+from pysheds.grid import Grid
 
 parser = argparse.ArgumentParser(description='Delineates a basin from an input lat/lon')
 parser.add_argument('region', nargs='?', type=str, help='State/Region of input delineation', default='ny')
@@ -18,17 +19,28 @@ class Point(object):
         self.lngDD = decimalDegreesLong
         self.projectedLat = None
         self.projectedLng = None
+        self.dataPath = ''
+        self.globalGDB = ''
+        self.localDataPath = ''
+        self.localGDB = ''
         self.inputPointProjected = None
+        self.dataPath = 'n/a'
         self.hucName = 'n/a'
         self.isGlobal = False
-        self.catchment = 'n/a'
+        self.catchmentID = 'n/a'
+        self.catchmentLayer = None
         self.adjointCatchment = 'n/a'
     
     #allow for string representation
     def __str__(self):
         return str(self.__class__) + ": " + str(self.__dict__)
 
-    def getGlobalInfo(self, fileGDB, hucLayerName, hucLayerNameField, globalStreamsLayerName, globalStreamsLayerNameField):
+    def setDataPaths(self, dataPath, region, globalGDBName):
+        self.dataPath = dataPath + region + '/'
+        self.region = region
+        self.globalGDB = self.dataPath + globalGDBName
+
+    def getGlobalInfo(self, hucLayerName, hucLayerNameField, globalStreamsLayerName, globalStreamsLayerNameField):
         '''
         This function gets global level information for input point
         '''
@@ -41,9 +53,9 @@ class Point(object):
 
         # opening the FileGDB
         try:
-            gdb = driver.Open(fileGDB, 0)
+            gdb = driver.Open(self.globalGDB, 0)
         except e:
-            print('Check to make sure you have a global gdb for:', args.region)
+            print('Check to make sure you have a global gdb for:', self.region)
             sys.exit()
 
         #get polygon layer to query
@@ -64,7 +76,7 @@ class Point(object):
         #Transform incoming longitude/latitude to the hucpoly projection
         [lon,lat,z]=ctran.TransformPoint(point.lngDD,point.latDD)
 
-        #store projected 
+        #store projected coords
         self.projectedLat = lat
         self.projectedLng = lon
 
@@ -72,6 +84,7 @@ class Point(object):
         pt = ogr.Geometry(ogr.wkbPoint)
         pt.SetPoint_2D(0, self.projectedLng, self.projectedLat)
 
+        #store point layer
         self.inputPointProjected = pt
 
         #Set up a spatial filter such that the only features we see when we
@@ -83,6 +96,10 @@ class Point(object):
             intersectPoly = feat_in.GetFieldAsString(hucNameFieldIndex)
             print('found your hucpoly: ',intersectPoly)
             self.hucName = intersectPoly
+
+            #store local path info now that we know it
+            self.localDataPath = self.dataPath + point.hucName + '/'
+            self.localGDB = self.localDataPath + point.hucName + '.gdb'
 
         #Set up a spatial filter such that the only features we see when we
         #loop through "hucLayer" are those which overlap the point defined above
@@ -97,7 +114,8 @@ class Point(object):
         # clean close
         del gdb
 
-    def getLocalInfo(self, fileGDB, catchmentLayerName, catchmentLayerNameField, adjointCatchmentLayerName):
+
+    def getLocalInfo(self, catchmentLayerName, catchmentLayerNameField, adjointCatchmentLayerName):
         '''
         This function finds the HUC workspace of the input point
         '''
@@ -110,14 +128,15 @@ class Point(object):
 
         # opening the FileGDB
         try:
-            gdb = driver.Open(fileGDB, 0)
+            gdb = driver.Open(self.localGDB, 0)
         except e:
-            print('Check to make sure you have a global gdb for:', args.region)
+            print('Check to make sure you have a global gdb for:', self.region)
             sys.exit()
 
         #get polygon layer to query
         catchmentLayer = gdb.GetLayer(catchmentLayerName)
         adjointCatchmentLayer = gdb.GetLayer(adjointCatchmentLayerName)
+        #fdrGrid = 
 
         #Put the title of the field you are interested in here
         catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(catchmentLayerNameField)
@@ -134,36 +153,96 @@ class Point(object):
         for feat_in in catchmentLayer:
             intersectPoly = feat_in.GetFieldAsString(catchmentLayerNameFieldIndex)
             print('found your catchment. HydroID is: ',intersectPoly)
-            self.catchment = intersectPoly
+            self.catchmentID = intersectPoly
+            self.catchmentLayer = feat_in
+
+
+        ### ---------------------------------------------------------
+
+        #### CHECK FOR LOCAL GLOBAL USING drainage_line.. get drain ID and use that to accumulate upstream adjointCatchment
+
+
+
+        ### ---------------------------------------------------------
+
+
+
         
         # clean close
         del gdb
 
+    def splitCatchment(self):
+        '''
+        This function computes watershed constrained by current single catchment
+        '''
 
-def checkMainStem(point, fileGDB, layerName):
-    '''
-    This function finds out of the input point is on a 'main stem'
-    '''
-    return False
+        fdr_grid = self.localDataPath + 'fdr'
+        catchmentLayer = self.catchmentLayer
 
-def accumulateUpstream(Catchment):
-    '''
-    This function accumulates upstream areas from selected catchment
-    '''
-    return geom
+        #gdal in memory files:
+        # https://gdal.org/user/virtual_file_systems.html#vsimem-in-memory-files
 
-def splitCatchment(huc, catchment, flowDir):
+        #gdal.warp text examples:
+        # https://trac.osgeo.org/gdal/browser/trunk/autotest/utilities/test_gdalwarp_lib.py
+
+        #gdalwarp -dstnodata -9999 -cutline catchment265.shp c:/temp/ny/02020001/fdr fdr_265.tif
+
+        #writes an output tiff clipped to a catchment shapefile
+        ds = gdal.Warp('c:/temp/ny/fdr265.tif', fdr_grid, cutlineDSName = 'c:/temp/ny/catchment265.shp', cropToCutline = True)
+
+        ds2 = gdal.Warp('c:/temp/ny/dem265.tif', self.localDataPath + 'dem', cutlineDSName = 'c:/temp/ny/catchment265.shp', cropToCutline = True)
+
+        #start pysheds catchment delienation
+        grid = Grid.from_raster('c:/temp/ny/dem265.tif', data_name='dem')
+        grid.read_raster('c:/temp/ny/fdr265.tif', data_name='dir')
+        
+        # Delineate the catchment
+        x = 600538.3159393527
+        y = 4873395.948041559
+
+        grid.catchment(data='dir', x=x, y=y, out_name='catch', recursionlimit=15000, xytype='label')
+
+        # Clip the bounding box to the catchment
+        grid.clip_to('catch')
+
+        #write out raster
+        out_ras = 'c:/temp/ny/out265.tif'
+        grid.to_raster('catch', out_ras)
+
+        singleBandRasterToPolygon(out_ras)
+
+def singleBandRasterToPolygon(raster):
     '''
-    This function computes watershed constrained by current single catchment
+    This function converts raster to a shapefile
     '''
-    return geom
+    src_ds = gdal.Open(raster)
+    if src_ds is None:
+        print('Unable to open raster dataset')
+        sys.exit()
+
+    try:
+        srcband = src_ds.GetRasterBand(1)
+    except RuntimeError:
+        print('Band not found')
+        sys.exit()
+
+    dst_layername = "c:/temp/ny/test"
+    drv = ogr.GetDriverByName("ESRI Shapefile")
+    dst_ds = drv.CreateDataSource( dst_layername + ".shp" )
+    dst_layer = dst_ds.CreateLayer(dst_layername, srs = None )
+    gdal.Polygonize( srcband, None, dst_layer, -1, [], callback=None )
+
 
 
 if __name__ == "__main__":
     
+    #instantiate point object
     point = Point(args.lat,args.lng)
-    globalGDB = args.dataFolder + args.region + '/global.GDB'
-    point.getGlobalInfo(globalGDB, 'hucpoly', 'NAME', 'streams3d', 'HydroID')
-    localGDB = args.dataFolder + args.region + '/' + point.hucName + '/' + point.hucName + '.gdb'
-    point.getLocalInfo(localGDB, 'Catchment', 'HydroID', 'AdjointCatchment')
-    #print(point)
+    point.setDataPaths(args.dataFolder, args.region, 'global.GDB')
+    point.getGlobalInfo('hucpoly', 'NAME', 'streams3d', 'HydroID')
+    point.getLocalInfo('Catchment', 'HydroID', 'AdjointCatchment')
+    localBasin = point.splitCatchment()
+
+
+
+    print(point)
