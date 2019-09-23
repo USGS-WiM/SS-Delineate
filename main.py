@@ -115,7 +115,7 @@ class Point(object):
         del gdb
 
 
-    def getLocalInfo(self, catchmentLayerName, catchmentLayerNameField, adjointCatchmentLayerName):
+    def getLocalInfo(self, catchmentLayerName, catchmentLayerNameField, adjointCatchmentLayerName, drainageLineLayerName):
         '''
         This function finds the HUC workspace of the input point
         '''
@@ -136,17 +136,16 @@ class Point(object):
         #get polygon layer to query
         catchmentLayer = gdb.GetLayer(catchmentLayerName)
         adjointCatchmentLayer = gdb.GetLayer(adjointCatchmentLayerName)
+        drainageLineLayer = gdb.GetLayer(adjointCatchmentLayerName)
         #fdrGrid = 
 
         #Put the title of the field you are interested in here
         catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(catchmentLayerNameField)
-        #globalStreamsHydroIdIndex = globalStreamsLayer.GetLayerDefn().GetFieldIndex(adjointCatchmentLayerNameField)
 
         #since we've already done this we can reuse the stored point layer
         pt = self.inputPointProjected
 
-        #Set up a spatial filter such that the only features we see when we
-        #loop through "hucLayer" are those which overlap the point defined above
+        #Set up a spatial filter to find features under point
         catchmentLayer.SetSpatialFilter(pt)
 
         #Loop through the overlapped features and display the field of interest
@@ -235,10 +234,24 @@ def singleBandRasterToPolygon(raster):
 
 
 if __name__ == "__main__":
+
+    #arguments
+    GLOBAL_GDB = 'global.GDB'
+    HUCPOLY_LAYER = 'hucpoly'
+    HUCPOLY_LAYER_ID = 'NAME'
+    GLOBAL_STREAM_LAYER = ['streams3d', 'streams']
+    GLOBAL_STREAM_LAYER_ID = 'HydroID'
+    CATCHMENT_LAYER = 'Catchment'
+    CATCHMENT_LAYER_ID = 'HydroID'
+    ADJOINT_CATCHMENT_LAYER = 'AdjointCatchment'
     
     #instantiate point object
     point = Point(args.lat,args.lng)
     point.setDataPaths(args.dataFolder, args.region, 'global.GDB')
+
+    #global streams layer is called 'streams' unless the state implemented 10/85 slope
+    # NEED TO ADD CHECK FOR THIS
+
     point.getGlobalInfo('hucpoly', 'NAME', 'streams3d', 'HydroID')
     point.getLocalInfo('Catchment', 'HydroID', 'AdjointCatchment')
     localBasin = point.splitCatchment()
