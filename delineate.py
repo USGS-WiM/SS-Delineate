@@ -1,3 +1,5 @@
+## StreamStats delineation script
+
 # -----------------------------------------------------
 # Martyn Smith USGS
 # 09/24/2019
@@ -18,6 +20,12 @@ from pysheds.grid import Grid
 import folium
 import time
 import json
+
+class Results(object):
+    def __init__(self, splitCatchment=None, adjointCatchment=None, mergedCatchment=None):
+        self.splitCatchment = splitCatchment
+        self.adjointCatchment = adjointCatchment
+        self.mergedCatchment = mergedCatchment       
 
 def delineateWatershed(y,x,region,dataPath):
 
@@ -72,8 +80,11 @@ def delineateWatershed(y,x,region,dataPath):
                 #recursive call to search next HUC
                 searchUpstreamGeometry(upstreamHUC, huc_name)
                 
-        return        
+        return       
+    
+    ## START 
 
+    #set paths
     globalDataPath = dataPath + region + '/'
     globalGDB = globalDataPath + GLOBAL_GDB
     huc_net_junction_list = []
@@ -113,7 +124,6 @@ def delineateWatershed(y,x,region,dataPath):
     for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
         globalStreamsLayer = global_gdb.GetLayer(globalStreamsLayerName)
         if globalStreamsLayer is None:
-            print('checking next global stream layer name')
             continue    
         break
     if globalStreamsLayer is None:
@@ -128,9 +138,7 @@ def delineateWatershed(y,x,region,dataPath):
     #huc_net_junctions layer (multiple possibilities)
     for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
         hucNetJunctionsLayer = global_gdb.GetLayer(hucNetJunctionsLayerName)
-        
         if hucNetJunctionsLayer is None:
-            print('checking next huc_net_junctions layer name')
             continue
         break
     if hucNetJunctionsLayer is None:
@@ -140,9 +148,7 @@ def delineateWatershed(y,x,region,dataPath):
     #looks like there are also multiple possibilities for the huc_net_junctions layerID field
     for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
         hucNetJunctionsIdIndex = hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
-        
         if hucNetJunctionsIdIndex is None:
-            print('checking next huc_net_junctions layer ID name')
             continue
         break
     if hucNetJunctionsIdIndex is None:
@@ -237,6 +243,7 @@ def delineateWatershed(y,x,region,dataPath):
         select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
         adjointCatchmentLayer.SetAttributeFilter(select_string)
 
+    if isLocalGlobal:
         for adjointCatchment_feat in adjointCatchmentLayer:
             print('found upstream adjointCatchment')
             adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()   
@@ -246,7 +253,6 @@ def delineateWatershed(y,x,region,dataPath):
                 for geom_part in adjointCatchmentGeom:
                     #print('in multipolygon process', geom_part)
                     adjointCatchmentGeom = geom_part
-
 
     if not isLocalGlobal:
         print('input point is type "local"')
@@ -274,9 +280,6 @@ def delineateWatershed(y,x,region,dataPath):
     # Clip the bounding box to the catchment
     grid.clip_to('catch')
 
-    #temp write out catchment raster
-    grid.to_raster(data_name='catch',file_name='c:/temp/catchment.tif')
-
     #some sort of strange raster to polygon conversion using rasterio method
     shapes = grid.polygonize()
 
@@ -294,20 +297,23 @@ def delineateWatershed(y,x,region,dataPath):
     ## ---------------------------------------------------------
     ## START AGGREGATE GEOMETRIES
     ## ---------------------------------------------------------
+    
         
     #get adjoint catchment geometry
     if isLocalGlobal:
     
         #apply a small buffer to adjoint catchment to remove sliver
-        ## PROBABLY A BETTER WAY TO DO THIS
         adjointCatchmentGeom = adjointCatchmentGeom.Buffer(1)
         
         #need to merge splitCatchment and adjointCatchment
-        mergedCatchmentGeom = adjointCatchmentGeom .Union(splitCatchmentGeom)
+        mergedCatchmentGeom = adjointCatchmentGeom.Union(splitCatchmentGeom)
         
     if isGlobal:
     
+        #kick off upstream global search recursive function starting with mergedCatchment
         searchUpstreamGeometry(mergedCatchmentGeom, 'adjointCatchment')
+        
+        print("Time before merge:",time.perf_counter() - timeBefore)
         
         if len(upstream_huc_list) > 0:
             print('UPSTREAM HUC LIST:', upstream_huc_list)
@@ -333,6 +339,8 @@ def delineateWatershed(y,x,region,dataPath):
                     mergedWatershed.AddGeometry(upstreamHUCgeom)
                     
             mergedWatershed = mergedWatershed.UnionCascaded()
+            
+            mergedCatchmentGeom =  mergedCatchmentGeom.Buffer(1)
             mergedCatchmentGeom = mergedCatchmentGeom.Union(mergedWatershed)
             
         else:
@@ -340,42 +348,23 @@ def delineateWatershed(y,x,region,dataPath):
             
     # clean close
     del global_gdb
-
-    timeAfter = time.perf_counter() 
-    totalTime = timeAfter - timeBefore
-    print("Elapsed Time:",totalTime)
-
+    
     ## ---------------------------------------------------------
     ## END AGGREGATE GEOMETRIES
     ## ---------------------------------------------------------
 
-    ## ---------------------------------------------------------
-    ## START DISPLAY
-    ## ---------------------------------------------------------
+    timeAfter = time.perf_counter() 
+    totalTime = timeAfter - timeBefore
+    print("Total Time:",totalTime)
 
-    #initialize map
-    m = folium.Map(location=[y, x],zoom_start=8, tiles='Stamen Terrain')
-
-    folium.Marker([y, x], popup='<i>delienation point</i>').add_to(m)
-
-    geojson = geomToGeoJSON(mergedCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
-    folium.GeoJson(geojson, name='mergedCatchment').add_to(m)
-
-    geojson = geomToGeoJSON(adjointCatchmentGeom.Simplify(10), 'adjointCatchment', region_ref, webmerc_ref)
-    folium.GeoJson(geojson, name='adjointCatchment').add_to(m)
-
-    geojson = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'splitCatchment', region_ref, webmerc_ref)
-    folium.GeoJson(geojson, name='splitCatchment').add_to(m)
-
-    #add layer control
-    folium.LayerControl().add_to(m)
-
-    #display folium map
-    m
-
-    ## ---------------------------------------------------------
-    ## END DISPLAY
-    ## ---------------------------------------------------------
+    #create outputs
+    results = Results()
+    if isLocalGlobal:
+        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
+        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom.Simplify(10), 'adjointCatchment', region_ref, webmerc_ref)
+    results.splitCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'splitCatchment', region_ref, webmerc_ref)
+    
+    return results
 
 if __name__=='__main__':
 
@@ -397,14 +386,33 @@ if __name__=='__main__':
     POINT_BUFFER_DISTANCE = 50 #in local projection units
     OUTPUT_GEOJSON = False
 
-    #point = (44.00683,-73.74586) #local
-    #point = (44.00431,-73.71348) #localGlobal
-    #point = (43.29139,-73.82705) #global non-nested upstream
-    #point = (42.17209,-73.87555) #global nested upstream
-    point = (41.00155,-73.89282) #hudson river huge
+#     point = (44.00683,-73.74586) #local
+    point = (44.00431,-73.71348) #localGlobal
+#     point = (43.29139,-73.82705) #global non-nested upstream
+#     point = (42.17209,-73.87555) #global nested upstream
+#     point = (41.00155,-73.89282) #global 8 huc nested upstream
  
     region = 'ny'
     dataPath = 'c:/temp/'
 
     #start main program
-    delineateWatershed(point[0],point[1],region,dataPath)
+    results = delineateWatershed(point[0],point[1],region,dataPath)
+    
+    #initialize map
+    m = folium.Map(location=[point[0], point[1]],zoom_start=8, tiles='Stamen Terrain')
+    folium.Marker([point[0], point[1]], popup='<i>delienation point</i>').add_to(m)
+    
+    #display all available results
+    for attr, value in results.__dict__.items():
+        if value is not None:
+            layer = folium.GeoJson(value, name=attr).add_to(m)
+            bounds = layer.get_bounds()
+
+    #add layer control
+    folium.LayerControl().add_to(m)
+    
+    #zoom map
+    m.fit_bounds(bounds)
+
+    #display folium map
+    display(m)
