@@ -397,11 +397,20 @@ if __name__=='__main__':
     POINT_BUFFER_DISTANCE = 50 #in local projection units
     OUTPUT_GEOJSON = False
 
-    #point = (44.00683,-73.74586) #local
-    #point = (44.00431,-73.71348) #localGlobal
-    #point = (43.29139,-73.82705) #global non-nested upstream
-    #point = (42.17209,-73.87555) #global nested upstream
-    point = (41.00155,-73.89282) #hudson river huge
+    #local
+    #point = (44.00683,-73.74586)
+
+    #localGlobal
+    #point = (44.00431,-73.71348)
+
+    #global non-nested upstream
+    #point = (43.29139,-73.82705)
+
+    #global nested upstream
+    #point = (42.17209,-73.87555)
+
+    #hudson river huge
+    point = (41.00155,-73.89282)
  
     region = 'ny'
     dataPath = 'c:/temp/'

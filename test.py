@@ -11,8 +11,6 @@
 #conda create -n delineate python=3.7 gdal pysheds folium jupyter pywin32
 ###### CONDA CREATE ENVIRONMENT COMMAND
 
-#%%
-
 import sys
 from osgeo import ogr, osr, gdal
 from pysheds.grid import Grid
@@ -50,12 +48,31 @@ OUTPUT_GEOJSON = False
 ogr.UseExceptions()
 gdal.UseExceptions() 
 
+def geomToGeoJSON(self, in_geom=None, name=None, in_ref=None, out_ref=None):
+    transform = osr.CoordinateTransformation(in_ref, out_ref)
+
+    #don't want to affect original geometry
+    transform_geom = in_geom.Clone()
+
+    #trasnsform geometry from whatever the local projection is to wgs84
+    transform_geom.Transform(transform)
+    geojson = transform_geom.ExportToJson()
+
+    if OUTPUT_GEOJSON:
+        f = open('./' + name + '.geojson','w')
+        f.write(geojson)
+        f.close()
+        print('Exported geojson:', name)
+
+    return geojson
+
 class watershedPoint(object):
     def __init__(self,decimalDegreesLat,decimalDegreesLong):
         self.latDD = decimalDegreesLat
         self.lngDD = decimalDegreesLong
         self.projectedLat = None
         self.projectedLng = None
+        self.inputPointProjected = None
         self.mainDataPath = None
         self.localDataPath = None
         self.globalGDB = None
@@ -64,10 +81,11 @@ class watershedPoint(object):
         self.isLocalGlobal = False
         self.isGlobal = False
         self.catchmentID = None
+        self.fileGDBdriver = ogr.GetDriverByName("OpenFileGDB")
         self.huc_net_junction_list = []
         self.upstream_huc_list = []
         self.timeBefore = time.perf_counter() 
-        self.timeAfter = None
+        self.timeAfter = None 
     
     #allow for string representation
     def __str__(self):
@@ -78,23 +96,129 @@ class watershedPoint(object):
         self.region = region
         self.globalGDB = self.mainDataPath + GLOBAL_GDB
 
-    def geomToGeoJSON(self, in_geom=None, name=None, in_ref=None, out_ref=None):
-        transform = osr.CoordinateTransformation(in_ref, out_ref)
-        
-        #don't want to affect original geometry
-        transform_geom = in_geom.Clone()
-        
-        #trasnsform geometry from whatever the local projection is to wgs84
-        transform_geom.Transform(transform)
-        geojson = transform_geom.ExportToJson()
+    def defineGlobalLayers(self):
 
-        if OUTPUT_GEOJSON:
-            f = open('./' + name + '.geojson','w')
-            f.write(geojson)
-            f.close()
-            print('Exported geojson:', name)
-        
-        return geojson
+        # opening the FileGDB
+        try:
+            global_gdb = self.fileGDBdriver.Open(self.globalGDB, 0)
+        except ValueError:
+            print('ERROR: Missing global gdb for:', region)
+
+        #global HUC layer (should be only one possibility)
+        self.hucLayer = global_gdb.GetLayer(HUCPOLY_LAYER)
+        if self.hucLayer is None:
+            raise ValueError('ERROR: Missing the hucpoly layer for:', region)
+
+        try:
+            self.hucNameFieldIndex = self.hucLayer.GetLayerDefn().GetFieldIndex(HUCPOLY_LAYER_ID)
+        except ValueError:
+            print('ERROR: Missing hucNameFieldIndex:', HUCPOLY_LAYER_ID)
+
+        #global streams layer (multiple possibilities)
+        for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
+            self.globalStreamsLayer = global_gdb.GetLayer(globalStreamsLayerName)
+            print('checking:',globalStreamsLayerName)
+            
+            if self.globalStreamsLayer is None:
+                print('checking next global stream layer name')
+                continue
+            else:
+                print('Global Stream Layer:',globalStreamsLayerName)
+                break
+        if self.globalStreamsLayer is None:
+            raise ValueError('ERROR: Missing global streams layer for:', self.region)
+
+        try:
+            self.globalStreamsHydroIdIndex = self.globalStreamsLayer.GetLayerDefn().GetFieldIndex(GLOBAL_STREAM_LAYER_ID)
+        except ValueError:
+            print('ERROR: globalStreamsHydroIdIndex:', HUCPOLY_LAYER_ID)
+
+        #huc_net_junctions layer (multiple possibilities)
+        for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
+            self.hucNetJunctionsLayer = global_gdb.GetLayer(hucNetJunctionsLayerName)
+
+            if self.hucNetJunctionsLayer is None:
+                print('checking next huc_net_junctions layer name')
+                continue
+            else:
+                break
+        if self.hucNetJunctionsLayer is None:
+            raise ValueError('ERROR: Missing huc_net_junctions layer for:', self.region)
+
+        #looks like there are also multiple possibilities for the huc_net_junctions layerID field
+        for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
+            self.hucNetJunctionsIdIndex = self.hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
+
+            if self.hucNetJunctionsIdIndex is None:
+                print('checking next huc_net_junctions layer ID name')
+                continue
+            else:
+                break
+                
+        if self.hucNetJunctionsIdIndex is None:
+            raise ValueError('ERROR: Missing huc_net_junctions ID index for:', self.region)
+
+        print('done')
+
+    def transformInputPoint(self):
+
+        print('here')
+
+        #Create a transformation between this and the hucpoly projection
+        self.region_ref = self.hucLayer.GetSpatialRef()
+        self.webmerc_ref = osr.SpatialReference()
+        self.webmerc_ref.ImportFromEPSG(4326)
+        ctran = osr.CoordinateTransformation(self.webmerc_ref,self.region_ref)
+
+        #Transform incoming longitude/latitude to the hucpoly projection
+        [self.projectedLng,self.projectedLat,z] = ctran.TransformPoint(self.lngDD,self.latDD)
+
+        print(self.projectedLat,self.projectedLng)
+
+        #Create a point
+        inputPointProjected = ogr.Geometry(ogr.wkbPoint)
+        inputPointProjected.SetPoint_2D(0, self.projectedLng, self.projectedLat)
+
+        return inputPointProjected
+    
+    def defineLocalLayers(self):
+
+        # opening the FileGDB
+        try:
+            local_gdb = driver.Open(self.localGDB, 0)
+        except ValueError:
+            print('ERROR: Check to make sure you have a local gdb for:', self.region)
+
+        #local catchment layer (should be only one possibility)
+        self.catchmentLayer = local_gdb.GetLayer(CATCHMENT_LAYER)
+        if self.catchmentLayer is None:
+            raise ValueError('ERROR: issue with local catchment layer for:', self.hucName)
+
+        try:
+            self.catchmentLayerNameFieldIndex = self.catchmentLayer.GetLayerDefn().GetFieldIndex(CATCHMENT_LAYER_ID)
+        except ValueError:
+            print('ERROR: Missing catchmentLayerNameFieldIndex:', CATCHMENT_LAYER_ID)
+
+
+        #local adjointCatchment layer (should be only one possibility)
+        self.adjointCatchmentLayer = local_gdb.GetLayer(ADJOINT_CATCHMENT_LAYER)
+        if self.adjointCatchmentLayer is None:
+            raise ValueError('ERROR: issue with local adjointCatchment layer for:', self.hucName)
+
+        try:
+            self.adjointCatchmentLayerNameFieldIndex = self. adjointCatchmentLayer.GetLayerDefn().GetFieldIndex(ADJOINT_CATCHMENT_LAYER_ID)
+        except ValueError:
+            print('ERROR: adjointCatchmentLayerNameFieldIndex:', ADJOINT_CATCHMENT_LAYER_ID)
+
+        #local drainageLine layer (should be only one possibility)
+        self.drainageLineLayer = local_gdb.GetLayer(DRAINAGE_LINE_LAYER)
+        if self.drainageLineLayer is None:
+            raise ValueError('ERROR: issue with local drainageLine layer for:', self.hucName)
+
+        try:
+            self.drainageLineLayerNameFieldIndex = drainageLineLayer.GetLayerDefn().GetFieldIndex(DRAINAGE_LINE_LAYER_ID)
+        except ValueError:
+            print('ERROR: drainageLineLayerNameFieldIndex:', DRAINAGE_LINE_LAYER_ID)        
 
     def searchUpstreamGeometry(self, geom=None, name=None):
 
@@ -119,7 +243,7 @@ class watershedPoint(object):
 
         #loop over upstream HUCs
         for huc_select_feat in self.hucLayer:
-            huc_name = huc_select_feat.GetFieldAsString(hucNameFieldIndex)
+            huc_name = huc_select_feat.GetFieldAsString(self.hucNameFieldIndex)
             #print('found huc:',huc_name)
             
             if huc_name not in upstream_huc_list:
@@ -128,168 +252,58 @@ class watershedPoint(object):
 
                 #recursive call to search next HUC
                 self.searchUpstreamGeometry(upstreamHUC, huc_name)
-                
+
         return        
 
-    def getUpstreamInfo(self):
-
-        #load fgdb driver
-        driver = ogr.GetDriverByName("OpenFileGDB")
-
-        # opening the FileGDB
-        global_gdb = driver.Open(self.globalGDB, 0)
-        if global_gdb is None:
-            print('ERROR: Missing global gdb for:',self.region)
-            sys.exit()
-
-        #get polygon layer to query
-        self.hucLayer = global_gdb.GetLayer(HUCPOLY_LAYER)
-        if self.hucLayer is None:
-            print('ERROR: Missing the hucpoly layer for:', self.region)
-            sys.exit()
-
-        #there are at least two possible global stream layer names     
-        for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
-            self.globalStreamsLayer = global_gdb.GetLayer(globalStreamsLayerName)
-            
-            if self.globalStreamsLayer is None:
-                print('checking next global stream layer name')
-                continue
-                
-            #otherwise we have a good layer so bail
-            else:
-                print('Global Stream Layer:',globalStreamsLayerName)
-                break
-            
-        #if its still none, exit the program
-        if self.globalStreamsLayer is None:
-            print('ERROR: Missing global streams layer for:', self.region)
-            sys.exit()
-
-        #looks like there are also multiple possibilities for the huc_net_junctions layerID field
-        for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
-            self.hucNetJunctionsLayer = global_gdb.GetLayer(hucNetJunctionsLayerName)
-            
-            if self.hucNetJunctionsLayer is None:
-                print('checking next huc_net_junctions layer name')
-                continue
-                
-            #otherwise we have a good layer so bail
-            else:
-                break
-                
-        if self.hucNetJunctionsLayer is None:
-            print('ERROR: Missing huc_net_junctions layer for:', self.region)
-            sys.exit()
-
-        #Put the title of the field you are interested in here
-        hucNameFieldIndex = self.hucLayer.GetLayerDefn().GetFieldIndex(HUCPOLY_LAYER_ID)
-
-        globalStreamsHydroIdIndex = self.globalStreamsLayer.GetLayerDefn().GetFieldIndex(GLOBAL_STREAM_LAYER_ID)
-
-        #looks like there are also multiple possibilities for the huc_net_junctions layerID field
-        for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
-            self.hucNetJunctionsIdIndex = self.hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
-
-            if self.hucNetJunctionsIdIndex is None:
-                print('checking next huc_net_junctions layer ID name')
-                continue
-                
-            #otherwise we have a good layer so bail
-            else:
-                print('huc_net_junctions layer ID:',hucNetJunctionsLayerID)
-                break
-                
-        if self.hucNetJunctionsIdIndex is None:
-            print('ERROR: huc_net_junctions ID not found for:', self.region)
-            sys.exit()
-
-        #Create a transformation between this and the hucpoly projection
-        self.region_ref = self.hucLayer.GetSpatialRef()
-        self.webmerc_ref = osr.SpatialReference()
-        self.webmerc_ref.ImportFromEPSG(4326)
-        ctran = osr.CoordinateTransformation(self.webmerc_ref,self.region_ref)
-
-        #Transform incoming longitude/latitude to the hucpoly projection
-        [self.projectedLng,self.projectedLat,z] = ctran.TransformPoint(self.lngDD,self.latDD)
-
-        #Create a point
-        inputPointProjected = ogr.Geometry(ogr.wkbPoint)
-        inputPointProjected.SetPoint_2D(0, self.projectedLng, self.projectedLat)
+    def getGlobalInfo(self):
 
         #find the HUC the point is in
         self.hucLayer.SetSpatialFilter(None)
-        self.hucLayer.SetSpatialFilter(inputPointProjected)
-
-        #Loop through the overlapped features and display the field of interest
+        self.hucLayer.SetSpatialFilter(self.inputPointProjected)
         for hucpoly_feat in self.hucLayer:
-            self.hucName = hucpoly_feat.GetFieldAsString(hucNameFieldIndex)
-            print('found your hucpoly: ',self.hucName)
+            self.hucName = hucpoly_feat.GetFieldAsString(self.hucNameFieldIndex)
 
-        #store local path info now that we know it
+        #now we know local data path so store it
         self.localDataPath = self.mainDataPath + self.hucName + '/'
         self.localGDB = self.localDataPath + self.hucName + '.gdb'
 
         #search global stream layer with a buffer to determine if point is on global stream
-        bufferPoint = inputPointProjected.Buffer(POINT_BUFFER_DISTANCE)
-        self.globalStreamsLayer.SetSpatialFilter(bufferPoint)
-
-        #if we have any hit here we know its global
+        self.bufferPoint = self.inputPointProjected.Buffer(POINT_BUFFER_DISTANCE)
+        self.globalStreamsLayer.SetSpatialFilter(self.bufferPoint)
         for stream_feat in self.globalStreamsLayer: 
             self.isGlobal = True
 
-        ## Open local GDB
-        local_gdb = driver.Open(self.localGDB, 0)
-        if local_gdb is None:
-            print('ERROR: Check to make sure you have a local gdb for:', self.region)
-            sys.exit()
+        return True
 
-        #define local data layers
-        catchmentLayer = local_gdb.GetLayer(CATCHMENT_LAYER)
-        catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(CATCHMENT_LAYER_ID)
-        if catchmentLayer is None or catchmentLayerNameFieldIndex is None:
-            print('ERROR: issue with local catchment layer for:', self.hucName)
-            sys.exit()
-            
-        adjointCatchmentLayer = local_gdb.GetLayer(ADJOINT_CATCHMENT_LAYER)
-        if adjointCatchmentLayer is None:
-            print('ERROR: Missing local adjointCatchment layer for:', self.region)
-            sys.exit()
-
-        drainageLineLayer = local_gdb.GetLayer(DRAINAGE_LINE_LAYER)
-        if drainageLineLayer is None:
-            print('ERROR: Missing local drainageLineLayer layer for:', self.region)
-            sys.exit()
-
-        #define local layer IDs
-        adjointCatchmentLayerNameFieldIndex = adjointCatchmentLayer.GetLayerDefn().GetFieldIndex(ADJOINT_CATCHMENT_LAYER_ID)
-        DrainageLineLayerNameFieldIndex = drainageLineLayer.GetLayerDefn().GetFieldIndex(DRAINAGE_LINE_LAYER_ID)
+    def getLocalInfo(self):
 
         #Get local catchment
-        catchmentLayer.SetSpatialFilter(inputPointProjected)
-        for catchment_feat in catchmentLayer:
-            self.catchmentID = catchment_feat.GetFieldAsString(catchmentLayerNameFieldIndex)
+        self.catchmentLayer.SetSpatialFilter(self.inputPointProjected)
+        for catchment_feat in self.catchmentLayer:
+            self.catchmentID = catchment_feat.GetFieldAsString(self.catchmentLayerNameFieldIndex)
             print('found your catchment. HydroID is: ',self.catchmentID)
 
         #Check if we have a 'localGlobal'
-        drainageLineLayer.SetSpatialFilter(bufferPoint)
-        for drainage_feat in drainageLineLayer:
+        self.drainageLineLayer.SetSpatialFilter(self.bufferPoint)
+        for drainage_feat in self.drainageLineLayer:
             self.isLocalGlobal = True
             select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + self.catchmentID + "'")
-            adjointCatchmentLayer.SetAttributeFilter(select_string)
+            
+        self.adjointCatchmentLayer.SetAttributeFilter(select_string)
+        for adjointCatchment_feat in self.adjointCatchmentLayer:
+            print('found upstream adjointCatchment')
+            self.adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()   
 
-            for adjointCatchment_feat in adjointCatchmentLayer:
-                print('found upstream adjointCatchment')
-                self.adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()   
-
-                #for some reason this is coming out as multipolygon
-                if self.adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
-                    for geom_part in self.adjointCatchmentGeom:
-                        #print('in multipolygon process', geom_part)
-                        self.adjointCatchmentGeom = geom_part
+            #for some reason this is coming out as multipolygon
+            if self.adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
+                for geom_part in self.adjointCatchmentGeom:
+                    #print('in multipolygon process', geom_part)
+                    self.adjointCatchmentGeom = geom_part
 
         # clean close
         del local_gdb
+
+    def splitCatchment(self):
 
         ## split catchment
         fdr = self.localDataPath + 'fdr' 
@@ -316,6 +330,8 @@ class watershedPoint(object):
         for shape in shapes:
             self.splitCatchmentGeom = self.splitCatchmentGeom.Union(ogr.CreateGeometryFromJson(json.dumps(shape[0])))
   
+    def aggregateGeometries(self):
+
         #get adjoint catchment geometry
         if self.isLocalGlobal:
         
@@ -361,11 +377,6 @@ class watershedPoint(object):
                 
         # clean close
         del global_gdb
-
-        self.timeAfter = time.perf_counter() 
-        totalTime = self.timeAfter - self.timeBefore
-        print("Elapsed Time:",totalTime)
-
 
     def displayMap(self):
         #initialize map
@@ -416,10 +427,19 @@ if __name__ == "__main__":
     
     #instantiate point object
     point = watershedPoint(args['lat'],args['lng'])
-
     point.setDataPaths(args['dataFolder'], args['region'])
-    point.getUpstreamInfo()
-    point.displayMap()
 
-    print(point)
+    point.defineGlobalLayers()
+    point.transformInputPoint()
+    #point.getGlobalInfo()
 
+    # point.defineLocalLayers()
+    # point.getLocalInfo()
+
+    # point.displayMap()
+
+    # print(point)
+
+    point.timeAfter = time.perf_counter() 
+    totalTime = point.timeAfter - point.timeBefore
+    print("Elapsed Time:",totalTime)
