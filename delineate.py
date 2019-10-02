@@ -31,15 +31,15 @@ GLOBAL_STREAM_LAYER_ID = 'HydroID'
 HUC_NET_JUNCTIONS_LAYER_LIST = ['Huc_net_Junctions3D','Huc_net_Junctions']
 HUC_NET_JUNCTIONS_LAYER_ID_LIST = ['Point2DID', 'HydroID']
 CATCHMENT_LAYER = 'Catchment'
-CATCHMENT_LAYER_ID = 'GridID'
+CATCHMENT_LAYER_ID = 'HydroID'
 ADJOINT_CATCHMENT_LAYER = 'AdjointCatchment'
-ADJOINT_CATCHMENT_LAYER_ID = 'GridID'
-DRAINAGE_LINE_LAYER = 'DrainageLine'
-DRAINAGE_LINE_LAYER_ID = 'DrainID'
+ADJOINT_CATCHMENT_LAYER_ID = 'DrainID'
+# DRAINAGE_LINE_LAYER = 'DrainageLine'
+# DRAINAGE_LINE_LAYER_ID = 'DrainID'
 POINT_BUFFER_DISTANCE = 5 # used for searching line features for local and global
 POLYGON_BUFFER_DISTANCE = 1 # used for eliminating slivers when merging polygon geometries
 FAC_SNAP_THRESHOLD = 900 
-OUTPUT_GEOJSON = False
+OUTPUT_GEOJSON = True
 
 class Results(object):
     def __init__(self, splitCatchment=None, adjointCatchment=None, mergedCatchment=None):
@@ -243,15 +243,15 @@ def delineateWatershed(y,x,region,dataPath):
     if adjointCatchmentLayer is None:
         print('ERROR: Check to make sure you have a local adjoint catchment for:', hucName)
         sys.exit()
-    drainageLineLayer = local_gdb.GetLayer(DRAINAGE_LINE_LAYER)
-    if drainageLineLayer is None:
-        print('ERROR: Check to make sure you have a local drainage line for:', hucName)
-        sys.exit()
+    # drainageLineLayer = local_gdb.GetLayer(DRAINAGE_LINE_LAYER)
+    # if drainageLineLayer is None:
+    #     print('ERROR: Check to make sure you have a local drainage line for:', hucName)
+    #     sys.exit()
 
     #Put the title of the field you are interested in here
     catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(CATCHMENT_LAYER_ID)
     adjointCatchmentLayerNameFieldIndex = adjointCatchmentLayer.GetLayerDefn().GetFieldIndex(ADJOINT_CATCHMENT_LAYER_ID)
-    DrainageLineLayerNameFieldIndex = drainageLineLayer.GetLayerDefn().GetFieldIndex(DRAINAGE_LINE_LAYER_ID)
+    # DrainageLineLayerNameFieldIndex = drainageLineLayer.GetLayerDefn().GetFieldIndex(DRAINAGE_LINE_LAYER_ID)
 
     #Get local catchment
     catchmentLayer.SetSpatialFilter(inputPointProjected)
@@ -268,36 +268,28 @@ def delineateWatershed(y,x,region,dataPath):
 
     #first check is on local HUC drainage line layer
     bufferPoint = inputPointProjected.Buffer(POINT_BUFFER_DISTANCE)
-    drainageLineLayer.SetSpatialFilter(bufferPoint)
+    #drainageLineLayer.SetSpatialFilter(bufferPoint)
 
-    for drainage_feat in drainageLineLayer:
-        select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
-        print('select string:',select_string)
-        adjointCatchmentLayer.SetAttributeFilter(select_string)
+    # for drainage_feat in drainageLineLayer:
+    #     select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
+    #     print('select string:',select_string)
+    #     adjointCatchmentLayer.SetAttributeFilter(select_string)
 
-        for adjointCatchment_feat in adjointCatchmentLayer:
-            isLocalGlobal = True
-            isLocal = False
-            print('found upstream adjointCatchment')
-            adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()   
+    select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
+    print('Adjoint Catchment select string:',select_string)
+    adjointCatchmentGeom = None
+    adjointCatchmentLayer.SetAttributeFilter(select_string)
 
-            #for some reason this is coming out as multipolygon
-            if adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
-                for geom_part in adjointCatchmentGeom:
-                    #print('in multipolygon process', geom_part)
-                    adjointCatchmentGeom = geom_part
+    for adjointCatchment_feat in adjointCatchmentLayer:
+        print('found upstream adjointCatchment')
+        adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()   
 
-            #since we know we are local global, also check if we are global
-            globalStreamsLayer.SetSpatialFilter(bufferPoint)
+        #for some reason this is coming out as multipolygon
+        if adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
+            for geom_part in adjointCatchmentGeom:
+                #print('in multipolygon process', geom_part)
+                adjointCatchmentGeom = geom_part
 
-            #Loop through the overlapped features and display the field of interest
-            for stream_feat in globalStreamsLayer:
-                globalStreamID = stream_feat.GetFieldAsString(globalStreamsHydroIdIndex)
-                print('input point is type "global" with ID:', globalStreamID)
-                isGlobal = True
-
-    # clean close
-    del local_gdb
 
     ## ---------------------------------------------------------
     ## END LOCAL GDB PROCESS
@@ -368,15 +360,33 @@ def delineateWatershed(y,x,region,dataPath):
     ## ---------------------------------------------------------
     ## START AGGREGATE GEOMETRIES
     ## ---------------------------------------------------------
-    
-    #merge adjoint Catchment geom with split catchment and were done
-    if isLocalGlobal:
-    
-        #apply a small buffer to adjoint catchment to remove sliver
-        adjointCatchmentGeom = adjointCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
-        
-        #need to merge splitCatchment and adjointCatchment
-        mergedCatchmentGeom = adjointCatchmentGeom.Union(splitCatchmentGeom)
+
+    #since we know we are local global, also check if we are global
+    globalStreamsLayer.SetSpatialFilter(bufferPoint)
+
+    #Loop through the overlapped features and display the field of interest
+    for stream_feat in globalStreamsLayer:
+        globalStreamID = stream_feat.GetFieldAsString(globalStreamsHydroIdIndex)
+        print('input point is type "global" with ID:', globalStreamID)
+        isGlobal = True
+
+    #make sure we have an adjoint catchment
+    if adjointCatchmentGeom:
+
+        #test if splitCatchment and adjointCatchment intersect
+        intersectGeom = splitCatchmentGeom.Intersection(adjointCatchmentGeom)
+        print('intersectArea:',"Area = %d" % intersectGeom.GetArea())
+
+        #crude test for valid overlap (meaning we need to aggregate)
+        if intersectGeom.GetArea() > 100:
+            isLocalGlobal = True
+            isLocal = False
+
+            #apply a small buffer to adjoint catchment to remove sliver
+            adjointCatchmentGeom = adjointCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
+            
+            #need to merge splitCatchment and adjointCatchment
+            mergedCatchmentGeom = adjointCatchmentGeom.Union(splitCatchmentGeom)
         
     #need to merge all upstream hucs in addition to localGlobal
     if isGlobal:
@@ -422,6 +432,7 @@ def delineateWatershed(y,x,region,dataPath):
             print('Something went wrong with global HUC aggregation')
             
     # clean close
+    del local_gdb
     del global_gdb
     
     ## ---------------------------------------------------------
@@ -436,22 +447,22 @@ def delineateWatershed(y,x,region,dataPath):
     results = Results()
     if isLocal:
         #if its a local this is all we want to return
-        results.mergedCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
+        results.mergedCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(0), 'mergedCatchment', region_ref, webmerc_ref)
     else:
-        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
-        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom.Simplify(10), 'adjointCatchment', region_ref, webmerc_ref)
-    results.splitCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'splitCatchment', region_ref, webmerc_ref)
+        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom.Simplify(0), 'mergedCatchment', region_ref, webmerc_ref)
+        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom.Simplify(0), 'adjointCatchment', region_ref, webmerc_ref)
+    #results.splitCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(0), 'splitCatchment', region_ref, webmerc_ref)
     
     return results
 
 if __name__=='__main__':
 
 
-    # point = (44.00683,-73.74586) #local
+    point = (44.00683,-73.74586) #local
     # point = (44.00431,-73.71348) #localGlobal
     # point = (43.29139,-73.82705) #global non-nested upstream
     # point = (42.17209,-73.87555) #global nested upstream
-    point = (41.00155,-73.89282) #global 8 huc nested upstream
+    # point = (41.00155,-73.89282) #global 8 huc nested upstream
 
     #point = (43.45338620107029 , -74.50329065322877) # bad catchment geometry (fixed using bounding box method for fdr clip)
     # point = (41.310936704746936 , -74.51668024063112) # bad split catchment result (fixed by adding snap to FAC>50)
@@ -462,9 +473,9 @@ if __name__=='__main__':
     ## NOT FIXED YET
     # point = (42.65815444403482 , -76.0077738761902) # its saying "DrainID" doesnt exist as a field for adjointCatchment layer
 
-    point = (42.34008482617163, -72.72163867950441)
+    # point = (42.34008482617163, -72.72163867950441)
  
-    region = 'ma'
+    region = 'ny'
     dataPath = 'c:/temp/'
 
     #start main program
