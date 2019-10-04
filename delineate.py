@@ -66,6 +66,8 @@ def delineateWatershed(y,x,region,dataPath):
         # grid.accumulation(data='dir', out_name='fac', apply_mask=False)
         # in_pnt = (projectedLng,projectedLat)
         # out_pnt = grid.snap_to_mask(grid.fac > FAC_SNAP_THRESHOLD, in_pnt, return_dist=False)
+        # print('snap using pysheds:', out_pnt[0],out_pnt[1])
+        # grid.catchment(data='dir', x=out_pnt[0], y=out_pnt[1], out_name='catch', recursionlimit=15000, xytype='label')
 
         #test process 3 --- use the center of the pixel we grabbed in the STR check step
         ### FIGURE THIS OUT
@@ -75,6 +77,11 @@ def delineateWatershed(y,x,region,dataPath):
 
         # Clip the bounding box to the catchment
         grid.clip_to('catch')
+
+        #for testing, export data
+        # grid.to_raster('catch','c:/temp/catch.tif')
+        #grid.to_raster('dir','c:/temp/fdr.tif')
+        #grid.to_raster('acc','c:/temp/fac.tif')
 
         #some sort of strange raster to polygon conversion using rasterio method
         shapes = grid.polygonize()
@@ -88,7 +95,8 @@ def delineateWatershed(y,x,region,dataPath):
         
         return split_geom
 
-    def retrieve_pixel_value(geo_coord, dataset):
+    def retrieve_pixel_value(geo_coord, raster):
+        dataset = gdal.Open(raster)
         transform = dataset.GetGeoTransform()
         xOrigin = transform[0]
         yOrigin = transform[3]
@@ -102,16 +110,28 @@ def delineateWatershed(y,x,region,dataPath):
 
         col = int((geo_coord[0] - xOrigin) / pixelWidth)
         row = int((yOrigin - geo_coord[1] ) / pixelHeight)
+        value = data[row][col]
+
+        # outX = geo_coord[0]
+        # outY = geo_coord[1]
 
         #transform pixel back to origin coordinates to and get center
-        outX = ((col * pixelWidth) + xOrigin) + pixelWidth/2
-        outY = ((row * -pixelHeight) + yOrigin) - pixelHeight/2
+        # outX = ((col * pixelWidth) + xOrigin) + pixelWidth/2
+        # outY = ((row * -pixelHeight) + yOrigin) - pixelHeight/2
 
-        return(data[row][col], outX, outY)
+        #pysheds actually wants the top left of pixel, not the center
+        outX = ((col * pixelWidth) + xOrigin)
+        outY = ((row * -pixelHeight) + yOrigin)
 
-    def geomToGeoJSON(in_geom, name, region_ref, webmerc_ref):
-        #spatialRef = in_geom.GetSpatialReference()
-        transform = osr.CoordinateTransformation(region_ref, webmerc_ref)
+        del dataset #cleanup
+
+        #return value and adjusted x,y
+        return(value, outX, outY)
+
+    def geomToGeoJSON(in_geom, name, simplify_tolerance, in_ref, out_ref):
+        in_geom = in_geom.Simplify(simplify_tolerance)
+
+        transform = osr.CoordinateTransformation(in_ref, out_ref)
         
         #don't want to affect original geometry
         transform_geom = in_geom.Clone()
@@ -120,19 +140,18 @@ def delineateWatershed(y,x,region,dataPath):
         transform_geom.Transform(transform)
         json_text = transform_geom.ExportToJson()
 
-        #get polygon area
-        area_sq_meters = in_geom.GetArea()
-        area_sq_miles = round(area_sq_meters*0.00000038610,2)
-        print('area:',area_sq_miles)
-
         #add some attributes
         geom_json = json.loads(json_text)
 
+        #get area in local units
+        area = in_geom.GetArea()
+        print('area:',round(area*0.00000038610,2))
+
         geojson_dict = {
             "type": "Feature",
-            "geometry": json_text,
+            "geometry": geom_json,
             "properties": {
-                "area_sq_miles": area_sq_miles
+                "area": area
             }
         }
 
@@ -316,8 +335,7 @@ def delineateWatershed(y,x,region,dataPath):
     isGlobal = False
 
     #query str grid with pixel value
-    str_raster = gdal.Open(str_grid)
-    str_val, centerProjectedX, centerProjectedY = retrieve_pixel_value((projectedLng, projectedLat), str_raster)
+    str_val, centerProjectedX, centerProjectedY = retrieve_pixel_value((projectedLng, projectedLat), str_grid)
 
     #point is on an str cell
     if str_val == 1:
@@ -416,6 +434,10 @@ def delineateWatershed(y,x,region,dataPath):
 
     print("Time before split catchment:",time.perf_counter() - timeBefore)
 
+    print('Projected X,Y:',projectedLng, ',', projectedLat)
+    print('Center Projected X,Y:',centerProjectedX, ',', centerProjectedY)
+
+    #splitCatchmentGeom = splitCatchment(fdr_grid, catchmentGeom, projectedLng, projectedLat)
     splitCatchmentGeom = splitCatchment(fdr_grid, catchmentGeom, centerProjectedX, centerProjectedY)
 
     print("Time after split catchment:",time.perf_counter() - timeBefore)
@@ -483,7 +505,6 @@ def delineateWatershed(y,x,region,dataPath):
     # clean close
     del global_gdb
     del local_gdb
-    del str_raster
     
     ## ---------------------------------------------------------
     ## END AGGREGATE GEOMETRIES
@@ -497,11 +518,11 @@ def delineateWatershed(y,x,region,dataPath):
     results = Results()
     if isLocal:
         #if its a local this is all we want to return
-        results.mergedCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
+        results.mergedCatchment = geomToGeoJSON(splitCatchmentGeom, 'mergedCatchment', 10, region_ref, webmerc_ref)
     else:
-        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom.Simplify(10), 'mergedCatchment', region_ref, webmerc_ref)
-        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom.Simplify(10), 'adjointCatchment', region_ref, webmerc_ref)
-    results.splitCatchment = geomToGeoJSON(splitCatchmentGeom.Simplify(10), 'splitCatchment', region_ref, webmerc_ref)
+        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom, 'mergedCatchment', 10, region_ref, webmerc_ref)
+        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom, 'adjointCatchment', 10, region_ref, webmerc_ref)
+    results.splitCatchment = geomToGeoJSON(splitCatchmentGeom, 'splitCatchment', 10, region_ref, webmerc_ref)
     
     return results
 
@@ -509,22 +530,23 @@ if __name__=='__main__':
 
     # point = (44.00683,-73.74586) #local
     # point = (44.03115617578595 , -73.71244903077174) #on str but still "local"
-    point = (44.00431,-73.71348) #localGlobal
-    #point = (43.29139,-73.82705) #global non-nested upstream
+    # point = (44.00431,-73.71348) #localGlobal
+    # point = (43.29139,-73.82705) #global non-nested upstream
     # point = (42.17209,-73.87555) #global nested upstream
-    #point = (41.00155,-73.89282) #global 8 huc nested upstream
+    # point = (41.00155,-73.89282) #global 8 huc nested upstream
 
-    #point = (43.45338620107029 , -74.50329065322877) # bad catchment geometry (fixed using bounding box method for fdr clip)
+    # point = (43.45338620107029 , -74.50329065322877) # bad catchment geometry (fixed using bounding box method for fdr clip)
     # point = (41.310936704746936 , -74.51668024063112) # bad split catchment result (fixed by adding snap to FAC>50)
-    #point = (43.31392194207697 , -73.8442397117614) #weird one was aggregation spatially disconnected HUCs (fixed by limited global line search buffer)
+    # point = (43.31392194207697 , -73.8442397117614) #weird one was aggregation spatially disconnected HUCs (fixed by limited global line search buffer)
     # point = (42.82741831644657 , -73.93358945846559) #single upstream HUC aggregation issue (fixed by update attributeFilter)
 
 
     #testing in MA
+    point = (42.55415514336133 , -71.50470972061159) #point produces zero area splitCatchment
     # point = (42.34008482617163, -72.72163867950441)
     # point = (42.24184837786185 , -72.62126059068201) #massachusetts global on connecticut river
  
-    region = 'ny'
+    region = 'ma'
     dataPath = 'c:/temp/'
 
     #start main program
