@@ -103,7 +103,7 @@ function changeCursor() {
 }
 
 function validatePoint(e) {
-    var checkPoint = toastr.info('Validating click point', {timeOut: 0});
+    var checkPoint = toastr.info('Validating click point', {extendedTimeOut: 0});
 
     if (map.getZoom() < 15) return;
 
@@ -131,7 +131,7 @@ function validatePoint(e) {
 function delineatePoint(e) {
 
     startTime = performance.now();
-    loadingToast = toastr.info('Delineating wastershed...', {timeOut: 0});
+    loadingToast = toastr.info('Delineating wastershed...', {extendedTimeOut: 0});
 
     features.clearLayers();
     if (point) { 
