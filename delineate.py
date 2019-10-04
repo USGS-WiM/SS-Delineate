@@ -110,6 +110,7 @@ def delineateWatershed(y,x,region,dataPath):
         return(data[row][col], outX, outY)
 
     def geomToGeoJSON(in_geom, name, region_ref, webmerc_ref):
+        #spatialRef = in_geom.GetSpatialReference()
         transform = osr.CoordinateTransformation(region_ref, webmerc_ref)
         
         #don't want to affect original geometry
@@ -117,7 +118,25 @@ def delineateWatershed(y,x,region,dataPath):
         
         #trasnsform geometry from whatever the local projection is to wgs84
         transform_geom.Transform(transform)
-        geojson = transform_geom.ExportToJson()
+        json_text = transform_geom.ExportToJson()
+
+        #get polygon area
+        area_sq_meters = in_geom.GetArea()
+        area_sq_miles = round(area_sq_meters*0.00000038610,2)
+        print('area:',area_sq_miles)
+
+        #add some attributes
+        geom_json = json.loads(json_text)
+
+        geojson_dict = {
+            "type": "Feature",
+            "geometry": json_text,
+            "properties": {
+                "area_sq_miles": area_sq_miles
+            }
+        }
+
+        geojson = json.dumps(geojson_dict)
 
         if OUTPUT_GEOJSON:
             f = open('./' + name + '.geojson','w')
@@ -490,13 +509,13 @@ if __name__=='__main__':
 
     # point = (44.00683,-73.74586) #local
     # point = (44.03115617578595 , -73.71244903077174) #on str but still "local"
-    # point = (44.00431,-73.71348) #localGlobal
+    point = (44.00431,-73.71348) #localGlobal
     #point = (43.29139,-73.82705) #global non-nested upstream
     # point = (42.17209,-73.87555) #global nested upstream
     #point = (41.00155,-73.89282) #global 8 huc nested upstream
 
     #point = (43.45338620107029 , -74.50329065322877) # bad catchment geometry (fixed using bounding box method for fdr clip)
-    point = (41.310936704746936 , -74.51668024063112) # bad split catchment result (fixed by adding snap to FAC>50)
+    # point = (41.310936704746936 , -74.51668024063112) # bad split catchment result (fixed by adding snap to FAC>50)
     #point = (43.31392194207697 , -73.8442397117614) #weird one was aggregation spatially disconnected HUCs (fixed by limited global line search buffer)
     # point = (42.82741831644657 , -73.93358945846559) #single upstream HUC aggregation issue (fixed by update attributeFilter)
 

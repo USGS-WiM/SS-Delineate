@@ -1,3 +1,9 @@
 {
-    "python.pythonPath": "C:\\Users\\marsmith\\miniconda\\envs\\delineate\\python.exe"
+    "python.pythonPath": "C:\\Users\\marsmith\\miniconda\\envs\\delineate\\python.exe",
+    "python.testing.pytestArgs": [
+        "tests","--disable-pytest-warnings"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.nosetestsEnabled": false,
+    "python.testing.pytestEnabled": true
 }
