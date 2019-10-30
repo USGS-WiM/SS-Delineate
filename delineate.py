@@ -2,7 +2,7 @@
 
 # -----------------------------------------------------
 # Martyn Smith USGS
-# 09/24/2019
+# 10/11/2019
 # StreamStats Delineation script
 # -----------------------------------------------------
 
@@ -10,14 +10,11 @@
 # gdal, pysheds
 
 ###### CONDA CREATE ENVIRONMENT COMMAND
-#conda create -n delineate python=3.7 gdal pysheds folium jupyter pywin32
+#conda create -n delineate python=3.7 gdal pysheds
 ###### CONDA CREATE ENVIRONMENT COMMAND
 
-import argparse
-import sys
 from osgeo import ogr, osr, gdal
 from pysheds.grid import Grid
-import folium
 import time
 import json
 
@@ -37,17 +34,32 @@ ADJOINT_CATCHMENT_LAYER_ID = 'GridID'
 POINT_BUFFER_DISTANCE = 5 # used for searching line features for local and global
 POLYGON_BUFFER_DISTANCE = 1 # used for eliminating slivers when merging polygon geometries
 FAC_SNAP_THRESHOLD = 900 
-OUTPUT_GEOJSON = True
 
-class Results(object):
-    def __init__(self, splitCatchment=None, adjointCatchment=None, mergedCatchment=None):
-        self.splitCatchment = splitCatchment
-        self.adjointCatchment = adjointCatchment
-        self.mergedCatchment = mergedCatchment       
+class Watershed:
 
-def delineateWatershed(y,x,region,dataPath):
+    ogr.UseExceptions()
+    gdal.UseExceptions() 
 
-    def splitCatchment(flow_dir, geom, x, y): 
+    def __init__(self, y=None, x=None, region=None, dataPath=None):
+
+        self.x = x
+        self.y = y
+        self.region = region
+        self.dataPath = dataPath
+        self.huc_net_junction_list = []
+        self.upstream_huc_list = []
+        self.driver = ogr.GetDriverByName("OpenFileGDB")
+
+        #kick off
+        self.get_global() 
+
+    class _results(object):
+        def __init__(self, splitCatchment=None, adjointCatchment=None, mergedCatchment=None):
+            self.splitCatchment = splitCatchment
+            self.adjointCatchment = adjointCatchment
+            self.mergedCatchment = mergedCatchment       
+
+    def split_catchment(self, flow_dir, geom, x, y): 
 
         #method to use catchment bounding box instead of exact geom
         minX, maxX, minY, maxY = geom.GetEnvelope()
@@ -56,32 +68,11 @@ def delineateWatershed(y,x,region,dataPath):
         #start pysheds catchment delineation
         grid = Grid.from_raster('/vsimem/fdr.tif', data_name='dir')
 
-        #test process 1 --- reading and clipping existing fac grid to snap
-        # gdal.Warp('/vsimem/str.tif', str_grid, outputBounds=[minX, minY, maxX, maxY])
-        # grid.read_raster('/vsimem/str.tif', data_name='str')
-        # in_pnt = (projectedLng,projectedLat)
-        # out_pnt = grid.snap_to_mask(grid.str > 0, in_pnt, return_dist=False)
-
-        #test process 2 --- creating new acc grid on the fly for snap
-        # grid.accumulation(data='dir', out_name='fac', apply_mask=False)
-        # in_pnt = (projectedLng,projectedLat)
-        # out_pnt = grid.snap_to_mask(grid.fac > FAC_SNAP_THRESHOLD, in_pnt, return_dist=False)
-        # print('snap using pysheds:', out_pnt[0],out_pnt[1])
-        # grid.catchment(data='dir', x=out_pnt[0], y=out_pnt[1], out_name='catch', recursionlimit=15000, xytype='label')
-
-        #test process 3 --- use the center of the pixel we grabbed in the STR check step
-        ### FIGURE THIS OUT
-
-        #test process 4 --- no snapping at all
+        #get catchment with pysheds
         grid.catchment(data='dir', x=x, y=y, out_name='catch', recursionlimit=15000, xytype='label')
 
         # Clip the bounding box to the catchment
         grid.clip_to('catch')
-
-        #for testing, export data
-        # grid.to_raster('catch','c:/temp/catch.tif')
-        #grid.to_raster('dir','c:/temp/fdr.tif')
-        #grid.to_raster('acc','c:/temp/fac.tif')
 
         #some sort of strange raster to polygon conversion using rasterio method
         shapes = grid.polygonize()
@@ -95,7 +86,7 @@ def delineateWatershed(y,x,region,dataPath):
         
         return split_geom
 
-    def retrieve_pixel_value(geo_coord, raster):
+    def retrieve_pixel_value(self, geo_coord, raster):
         dataset = gdal.Open(raster)
         transform = dataset.GetGeoTransform()
         xOrigin = transform[0]
@@ -112,13 +103,6 @@ def delineateWatershed(y,x,region,dataPath):
         row = int((yOrigin - geo_coord[1] ) / pixelHeight)
         value = data[row][col]
 
-        # outX = geo_coord[0]
-        # outY = geo_coord[1]
-
-        #transform pixel back to origin coordinates to and get center
-        # outX = ((col * pixelWidth) + xOrigin) + pixelWidth/2
-        # outY = ((row * -pixelHeight) + yOrigin) - pixelHeight/2
-
         #pysheds actually wants the top left of pixel, not the center
         outX = ((col * pixelWidth) + xOrigin)
         outY = ((row * -pixelHeight) + yOrigin)
@@ -128,7 +112,7 @@ def delineateWatershed(y,x,region,dataPath):
         #return value and adjusted x,y
         return(value, outX, outY)
 
-    def geomToGeoJSON(in_geom, name, simplify_tolerance, in_ref, out_ref):
+    def geom_to_geojson(self, in_geom, name, simplify_tolerance, in_ref, out_ref, write_output=False):
         in_geom = in_geom.Simplify(simplify_tolerance)
 
         transform = osr.CoordinateTransformation(in_ref, out_ref)
@@ -145,7 +129,6 @@ def delineateWatershed(y,x,region,dataPath):
 
         #get area in local units
         area = in_geom.GetArea()
-        print('area:',round(area*0.00000038610,2))
 
         geojson_dict = {
             "type": "Feature",
@@ -157,7 +140,7 @@ def delineateWatershed(y,x,region,dataPath):
 
         geojson = json.dumps(geojson_dict)
 
-        if OUTPUT_GEOJSON:
+        if write_output:
             f = open('./' + name + '.geojson','w')
             f.write(geojson)
             f.close()
@@ -165,408 +148,354 @@ def delineateWatershed(y,x,region,dataPath):
         
         return geojson
 
-    def searchUpstreamGeometry(geom, name):
+    def search_upstream_geometry(self, geom, name):
 
         print('Search upstream geometry:', name)
         
 
         #get list of huc_net_junctions using merged catchment geometry
-        hucNetJunctionsLayer.SetSpatialFilter(None)
-        hucNetJunctionsLayer.SetSpatialFilter(geom)
-        hucNetJunctionsFeat = None
+        self.hucNetJunctionsLayer.SetSpatialFilter(None)
+        self.hucNetJunctionsLayer.SetSpatialFilter(geom)
+        self.hucNetJunctionsFeat = None
 
         #loop over each junction
-        for hucNetJunctions_feat in hucNetJunctionsLayer:
-            hucNetJunctionsID = hucNetJunctions_feat.GetFieldAsString(hucNetJunctionsIdIndex)
-            hucNetJunctionsFeat = hucNetJunctions_feat
-            s = (HUCPOLY_LAYER_JUNCTION_ID + " = " + hucNetJunctionsID + "")
+        for hucNetJunctions_feat in self.hucNetJunctionsLayer:
+            self.hucNetJunctionsID = hucNetJunctions_feat.GetFieldAsString(self.hucNetJunctionsIdIndex)
+            self.hucNetJunctionsFeat = hucNetJunctions_feat
+            s = (HUCPOLY_LAYER_JUNCTION_ID + " = " + self.hucNetJunctionsID + "")
             #print('huc search string:',s)
-            if s not in huc_net_junction_list:
-                huc_net_junction_list.append(s)
+            if s not in self.huc_net_junction_list:
+                self.huc_net_junction_list.append(s)
 
-        if not hucNetJunctionsFeat:
+        if not self.hucNetJunctionsFeat:
             print('ERROR: no huc_net_junction features found within the geom:',name)
                 
         #print("HUC_net_junction list:",huc_net_junction_list)
 
-        if len(huc_net_junction_list) == 0:
+        if len(self.huc_net_junction_list) == 0:
             return
 
         #search for upstream connected HUC using huc_net_junctions
         operator = " OR "
-        huc_net_junction_string = operator.join(huc_net_junction_list) 
-        hucLayer.SetAttributeFilter(None)
-        hucLayer.SetAttributeFilter(huc_net_junction_string)
+        huc_net_junction_string = operator.join(self.huc_net_junction_list) 
+        self.hucLayer.SetAttributeFilter(None)
+        self.hucLayer.SetAttributeFilter(huc_net_junction_string)
 
         #loop over upstream HUCs
-        for huc_select_feat in hucLayer:
-            huc_name = huc_select_feat.GetFieldAsString(hucNameFieldIndex)
+        for huc_select_feat in self.hucLayer:
+            huc_name = huc_select_feat.GetFieldAsString(self.hucNameFieldIndex)
             #print('found huc:',huc_name)
             
-            if huc_name not in upstream_huc_list:
+            if huc_name not in self.upstream_huc_list:
                 upstreamHUC = huc_select_feat.GetGeometryRef()
-                upstream_huc_list.append(huc_name)
+                self.upstream_huc_list.append(huc_name)
 
                 #recursive call to search next HUC
-                searchUpstreamGeometry(upstreamHUC, huc_name)
+                self.search_upstream_geometry(upstreamHUC, huc_name)
 
         return       
     
-    ## START 
+    def get_global(self):
 
-    #set paths
-    globalDataPath = dataPath + region + '/archydro/'
-    global_gdb = None
-    huc_net_junction_list = []
-    upstream_huc_list = []
-    timeBefore = time.perf_counter()  
+        globalDataPath = self.dataPath + self.region + '/archydro/'
+        self.global_gdb = None
 
-    ## ---------------------------------------------------------
-    ## START GLOBAL GDB PROCESS
-    ## ---------------------------------------------------------
-    # use OGR specific exceptions
-    ogr.UseExceptions()
-    gdal.UseExceptions()
+        # opening the FileGDB
+        for self.global_gdb in GLOBAL_GDB_LIST:
+            globalGDB = globalDataPath + self.global_gdb
+            self.global_gdb = self.driver.Open(globalGDB, 0)
+            if self.global_gdb is None:
+                continue    
+            break
+        if self.global_gdb is None:
+            print('ERROR: Missing global gdb for:', self.region)
 
-    # get the driver
-    driver = ogr.GetDriverByName("OpenFileGDB")
+        print('y,x:',self.y,',',self.x,'\nRegion:',self.region,'\nGlobalDataPath:',globalDataPath,'\nGlobalGDB:',globalGDB)
 
-    # opening the FileGDB
-    for GLOBAL_GDB in GLOBAL_GDB_LIST:
-        globalGDB = globalDataPath + GLOBAL_GDB
-        global_gdb = driver.Open(globalGDB, 0)
-        if global_gdb is None:
-            continue    
-        break
-    if global_gdb is None:
-        print('ERROR: Missing global gdb for:', region)
-        sys.exit()
+        #global HUC layer (should be only one possibility)
+        self.hucLayer = self.global_gdb.GetLayer(HUCPOLY_LAYER)
+        if self.hucLayer is None:
+            print('ERROR: Missing the hucpoly layer for:', self.region)
 
-    print('y,x:',y,',',x,'\nRegion:',region,'\nGlobalDataPath:',globalDataPath,'\nGlobalGDB:',globalGDB)
+        try:
+            self.hucNameFieldIndex = self.hucLayer.GetLayerDefn().GetFieldIndex(HUCPOLY_LAYER_ID)
+        except ValueError:
+            print('ERROR: Missing hucNameFieldIndex:', HUCPOLY_LAYER_ID)
 
-    #global HUC layer (should be only one possibility)
-    hucLayer = global_gdb.GetLayer(HUCPOLY_LAYER)
-    if hucLayer is None:
-        print('ERROR: Missing the hucpoly layer for:', region)
-        sys.exit()
+        #global streams layer (multiple possibilities)     
+        for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
+            self.globalStreamsLayer = self.global_gdb.GetLayer(globalStreamsLayerName)
+            if self.globalStreamsLayer is None:
+                continue    
+            break
+        if self.globalStreamsLayer is None:
+            print('ERROR: Missing global streams layer for:', self.region)
 
-    try:
-        hucNameFieldIndex = hucLayer.GetLayerDefn().GetFieldIndex(HUCPOLY_LAYER_ID)
-    except ValueError:
-        print('ERROR: Missing hucNameFieldIndex:', HUCPOLY_LAYER_ID)
+        try:
+            self.globalStreamsHydroIdIndex = self.globalStreamsLayer.GetLayerDefn().GetFieldIndex(GLOBAL_STREAM_LAYER_ID)
+        except ValueError:
+            print('ERROR: globalStreamsHydroIdIndex:', HUCPOLY_LAYER_ID)
 
-    #global streams layer (multiple possibilities)     
-    for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
-        globalStreamsLayer = global_gdb.GetLayer(globalStreamsLayerName)
-        if globalStreamsLayer is None:
-            continue    
-        break
-    if globalStreamsLayer is None:
-        print('ERROR: Missing global streams layer for:', region)
-        sys.exit()
+        #huc_net_junctions layer (multiple possibilities)
+        for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
+            self.hucNetJunctionsLayer = self.global_gdb.GetLayer(hucNetJunctionsLayerName)
+            if self.hucNetJunctionsLayer is None:
+                continue
+            break
+        if self.hucNetJunctionsLayer is None:
+            print('ERROR: Missing huc_net_junctions layer for:', self.region)
 
-    try:
-        globalStreamsHydroIdIndex = globalStreamsLayer.GetLayerDefn().GetFieldIndex(GLOBAL_STREAM_LAYER_ID)
-    except ValueError:
-        print('ERROR: globalStreamsHydroIdIndex:', HUCPOLY_LAYER_ID)
+        #looks like there are also multiple possibilities for the huc_net_junctions layerID field
+        for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
+            self.hucNetJunctionsIdIndex = self.hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
+            if self.hucNetJunctionsIdIndex == -1:
+                continue
+            break
+        if self.hucNetJunctionsIdIndex == -1:
+            print('ERROR: huc_net_junctions ID not found for:', region)
 
-    #huc_net_junctions layer (multiple possibilities)
-    for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
-        hucNetJunctionsLayer = global_gdb.GetLayer(hucNetJunctionsLayerName)
-        if hucNetJunctionsLayer is None:
-            continue
-        break
-    if hucNetJunctionsLayer is None:
-        print('ERROR: Missing huc_net_junctions layer for:', region)
-        sys.exit()
+        #Create a transformation between this and the hucpoly projection
+        self.region_ref = self.hucLayer.GetSpatialRef()
+        self.webmerc_ref = osr.SpatialReference()
+        self.webmerc_ref.ImportFromEPSG(4326)
+        ctran = osr.CoordinateTransformation(self.webmerc_ref,self.region_ref)
 
-    #looks like there are also multiple possibilities for the huc_net_junctions layerID field
-    for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
-        hucNetJunctionsIdIndex = hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
-        if hucNetJunctionsIdIndex == -1:
-            continue
-        break
-    if hucNetJunctionsIdIndex == -1:
-        print('ERROR: huc_net_junctions ID not found for:', region)
-        sys.exit()
+        #Transform incoming longitude/latitude to the hucpoly projection
+        [self.projectedLng,self.projectedLat,z] = ctran.TransformPoint(self.x,self.y)
 
-    #Create a transformation between this and the hucpoly projection
-    region_ref = hucLayer.GetSpatialRef()
-    webmerc_ref = osr.SpatialReference()
-    webmerc_ref.ImportFromEPSG(4326)
-    ctran = osr.CoordinateTransformation(webmerc_ref,region_ref)
+        #Create a point
+        inputPointProjected = ogr.Geometry(ogr.wkbPoint)
+        inputPointProjected.SetPoint_2D(0, self.projectedLng, self.projectedLat)
 
-    #Transform incoming longitude/latitude to the hucpoly projection
-    [projectedLng,projectedLat,z] = ctran.TransformPoint(x,y)
+        #find the HUC the point is in
+        self.hucLayer.SetSpatialFilter(inputPointProjected)
 
-    #Create a point
-    inputPointProjected = ogr.Geometry(ogr.wkbPoint)
-    inputPointProjected.SetPoint_2D(0, projectedLng, projectedLat)
+        #Loop through the overlapped features and display the field of interest
+        for hucpoly_feat in self.hucLayer:
+            hucName = hucpoly_feat.GetFieldAsString(self.hucNameFieldIndex)
+            print('found your hucpoly: ',hucName)
 
-    #find the HUC the point is in
-    hucLayer.SetSpatialFilter(inputPointProjected)
+            #store local path info now that we know it
+            localDataPath = globalDataPath + hucName + '/'
+            localGDB = localDataPath + hucName + '.gdb'
 
-    #Loop through the overlapped features and display the field of interest
-    for hucpoly_feat in hucLayer:
-        hucName = hucpoly_feat.GetFieldAsString(hucNameFieldIndex)
-        print('found your hucpoly: ',hucName)
+        #clear hucLayer spatial filter
+        self.hucLayer.SetSpatialFilter(None)
 
-        #store local path info now that we know it
-        localDataPath = globalDataPath + hucName + '/'
-        localGDB = localDataPath + hucName + '.gdb'
+        #now that we know local huc, get rest of local info
+        self.get_local(inputPointProjected, localDataPath, localGDB)
 
-    #clear hucLayer spatial filter
-    hucLayer.SetSpatialFilter(None)
-
-    ## ---------------------------------------------------------
-    ## END GLOBAL GDB PROCESS
-    ## ---------------------------------------------------------
-
-    ## ---------------------------------------------------------
-    ## START LOCAL GDB PROCESS
-    ## ---------------------------------------------------------
-    fdr_grid = localDataPath + 'fdr'
-    str_grid = localDataPath + 'str'
-
-    #to start assume we have a local
-    on_str_grid = False
-    isLocal = True
-    isLocalGlobal = False
-    isGlobal = False
-
-    #query str grid with pixel value
-    str_val, centerProjectedX, centerProjectedY = retrieve_pixel_value((projectedLng, projectedLat), str_grid)
-
-    #point is on an str cell
-    if str_val == 1:
-        on_str_grid = True
-
-    # get the driver
-    driver = ogr.GetDriverByName("OpenFileGDB")
-
-    # opening the FileGDB
-    try:
-        local_gdb = driver.Open(localGDB, 0)
-    except e:
-        print('ERROR: Check to make sure you have a local gdb for:', hucName)
-        sys.exit()
-
-    #define local data layers
-    catchmentLayer = local_gdb.GetLayer(CATCHMENT_LAYER)
-    if catchmentLayer is None:
-        print('ERROR: Check to make sure you have a local catchment for:', hucName)
-        sys.exit()
-    adjointCatchmentLayer = local_gdb.GetLayer(ADJOINT_CATCHMENT_LAYER)
-    if adjointCatchmentLayer is None:
-        print('ERROR: Check to make sure you have a local adjoint catchment for:', hucName)
-        sys.exit()
-
-    #Put the title of the field you are interested in here
-    catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(CATCHMENT_LAYER_ID)
-    adjointCatchmentLayerNameFieldIndex = adjointCatchmentLayer.GetLayerDefn().GetFieldIndex(ADJOINT_CATCHMENT_LAYER_ID)
-
-    #Get local catchment
-    catchmentLayer.SetSpatialFilter(inputPointProjected)
-    catchmentFeat = None
-    for catchment_feat in catchmentLayer:
-        catchmentID = catchment_feat.GetFieldAsString(catchmentLayerNameFieldIndex)
-        catchmentFeat = catchment_feat
-        print('found your catchment. HydroID is: ',catchmentID)
-
-    if catchmentFeat:
-        catchmentGeom = catchmentFeat.GetGeometryRef()
-    else:
-        print('ERROR: A local catchment was not found for your input point')
-        sys.exit()
-
-    #we know we are on an str cell, so need to check for an adjointCatchment
-    if on_str_grid:
-
-        #select adjoint catchment layer using ID from current catchment
-        select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
-        print('select string:',select_string)
-        adjointCatchmentLayer.SetAttributeFilter(select_string)
-
-        adjointCatchmentFeat = None
-        for adjointCatchment_feat in adjointCatchmentLayer:
-            print('found upstream adjointCatchment')
-            adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()
-            adjointCatchmentFeat = adjointCatchment_feat
-
-            #create multipolygon container for all parts
-            mergedAdjointCatchmentGeom = ogr.Geometry(ogr.wkbMultiPolygon)
-
-            #for some reason this is coming out as multipolygon
-            if adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
-                for geom_part in adjointCatchmentGeom:
-                    mergedAdjointCatchmentGeom.AddGeometry(geom_part)
-                    
-                adjointCatchmentGeom = mergedAdjointCatchmentGeom.UnionCascaded()
-
-        #there are cases where a point has str cell, but does not have an adjointCatchment
-        if adjointCatchmentFeat:
-            print('point is a localGlobal')
-
-            isLocal = False
-            isLocalGlobal = True
-
-            #buffer point
-            bufferPoint = inputPointProjected.Buffer(POINT_BUFFER_DISTANCE)
-
-            #since we know we are local global, also check if we are global
-            globalStreamsLayer.SetSpatialFilter(bufferPoint)
-
-            #Loop through the overlapped features and display the field of interest
-            for stream_feat in globalStreamsLayer:
-                globalStreamID = stream_feat.GetFieldAsString(globalStreamsHydroIdIndex)
-                print('input point is type "global" with ID:', globalStreamID)
-                isGlobal = True
-        else:
-            print('point is a local')
-
-    ## ---------------------------------------------------------
-    ## END LOCAL GDB PROCESS
-    ## ---------------------------------------------------------
-
-    ## ---------------------------------------------------------
-    ## START SPLIT CATCHMENT PROCESS
-    ## ---------------------------------------------------------
-
-    print("Time before split catchment:",time.perf_counter() - timeBefore)
-
-    print('Projected X,Y:',projectedLng, ',', projectedLat)
-    print('Center Projected X,Y:',centerProjectedX, ',', centerProjectedY)
-
-    #splitCatchmentGeom = splitCatchment(fdr_grid, catchmentGeom, projectedLng, projectedLat)
-    splitCatchmentGeom = splitCatchment(fdr_grid, catchmentGeom, centerProjectedX, centerProjectedY)
-
-    print("Time after split catchment:",time.perf_counter() - timeBefore)
-    ## ---------------------------------------------------------
-    ## END SPLIT CATCHMENT PROCESS
-    ## ---------------------------------------------------------
-
-
-    ## ---------------------------------------------------------
-    ## START AGGREGATE GEOMETRIES
-    ## ---------------------------------------------------------
-    
-    #merge adjoint Catchment geom with split catchment and were done
-    if isLocalGlobal:
-    
-        #apply a small buffer to adjoint catchment to remove sliver
-        adjointCatchmentGeom = adjointCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
-        
-        #need to merge splitCatchment and adjointCatchment
-        mergedCatchmentGeom = adjointCatchmentGeom.Union(splitCatchmentGeom)
-        
-    #need to merge all upstream hucs in addition to localGlobal
-    if isGlobal:
-    
-        #kick off upstream global search recursive function starting with mergedCatchment
-        searchUpstreamGeometry(mergedCatchmentGeom, 'adjointCatchment')
-        
-        print("Time before merge:",time.perf_counter() - timeBefore)
-        print('UPSTREAM HUC LIST:', upstream_huc_list)
-        
-        if len(upstream_huc_list) > 0:
+    def get_local(self, inputPointProjected, localDataPath, localGDB):
             
-            #make sure filter is clear
-            hucLayer.SetAttributeFilter(None)
+        fdr_grid = localDataPath + 'fdr'
+        str_grid = localDataPath + 'str'
 
-            #set attribute filter 
-            if len(upstream_huc_list) == 1:
-                hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + " = '" + upstream_huc_list[0] + "'")
-            #'in' operator doesnt work with list len of 1
+        #to start assume we have a local
+        on_str_grid = False
+        self.isLocal = True
+        self.isLocalGlobal = False
+        self.isGlobal = False
+
+        #query str grid with pixel value
+        str_val, self.snappedProjectedX, self.snappedProjectedY = self.retrieve_pixel_value((self.projectedLng, self.projectedLat), str_grid)
+
+        #point is on an str cell
+        if str_val == 1:
+            on_str_grid = True
+
+        # opening the FileGDB
+        try:
+            local_gdb = self.driver.Open(localGDB, 0)
+        except e:
+            print('ERROR: Check to make sure you have a local gdb for:', hucName)
+
+        #define local data layers
+        catchmentLayer = local_gdb.GetLayer(CATCHMENT_LAYER)
+        if catchmentLayer is None:
+            print('ERROR: Check to make sure you have a local catchment for:', hucName)
+
+        adjointCatchmentLayer = local_gdb.GetLayer(ADJOINT_CATCHMENT_LAYER)
+        if adjointCatchmentLayer is None:
+            print('ERROR: Check to make sure you have a local adjoint catchment for:', hucName)
+
+        #Put the title of the field you are interested in here
+        catchmentLayerNameFieldIndex = catchmentLayer.GetLayerDefn().GetFieldIndex(CATCHMENT_LAYER_ID)
+        adjointCatchmentLayerNameFieldIndex = adjointCatchmentLayer.GetLayerDefn().GetFieldIndex(ADJOINT_CATCHMENT_LAYER_ID)
+
+        #Get local catchment
+        catchmentLayer.SetSpatialFilter(inputPointProjected)
+        catchmentFeat = None
+        for catchment_feat in catchmentLayer:
+            catchmentID = catchment_feat.GetFieldAsString(catchmentLayerNameFieldIndex)
+            catchmentFeat = catchment_feat
+            print('found your catchment. HydroID is: ',catchmentID)
+
+        if catchmentFeat:
+            catchmentGeom = catchmentFeat.GetGeometryRef()
+        else:
+            print('ERROR: A local catchment was not found for your input point')
+
+        #we know we are on an str cell, so need to check for an adjointCatchment
+        if on_str_grid:
+
+            #select adjoint catchment layer using ID from current catchment
+            select_string = (ADJOINT_CATCHMENT_LAYER_ID + " = '" + catchmentID + "'")
+            print('select string:',select_string)
+            adjointCatchmentLayer.SetAttributeFilter(select_string)
+
+            adjointCatchmentFeat = None
+            for adjointCatchment_feat in adjointCatchmentLayer:
+                print('found upstream adjointCatchment')
+                self.adjointCatchmentGeom = adjointCatchment_feat.GetGeometryRef()
+                adjointCatchmentFeat = adjointCatchment_feat
+
+                #create multipolygon container for all parts
+                mergedAdjointCatchmentGeom = ogr.Geometry(ogr.wkbMultiPolygon)
+
+                #for some reason this is coming out as multipolygon
+                if self.adjointCatchmentGeom.GetGeometryName() == 'MULTIPOLYGON':
+                    for geom_part in self.adjointCatchmentGeom:
+                        mergedAdjointCatchmentGeom.AddGeometry(geom_part)
+                        
+                    self.adjointCatchmentGeom = mergedAdjointCatchmentGeom.UnionCascaded()
+
+            #there are cases where a point has str cell, but does not have an adjointCatchment
+            if adjointCatchmentFeat:
+                print('point is a localGlobal')
+
+                self.isLocal = False
+                self.isLocalGlobal = True
+
+                #buffer point
+                bufferPoint = inputPointProjected.Buffer(POINT_BUFFER_DISTANCE)
+
+                #since we know we are local global, also check if we are global
+                self.globalStreamsLayer.SetSpatialFilter(bufferPoint)
+
+                #Loop through the overlapped features and display the field of interest
+                for stream_feat in self.globalStreamsLayer:
+                    globalStreamID = stream_feat.GetFieldAsString(self.globalStreamsHydroIdIndex)
+                    print('input point is type "global" with ID:', globalStreamID)
+                    self.isGlobal = True
             else:
-                hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + ' IN {}'.format(tuple(upstream_huc_list)))
+                print('point is a local')
+
+
+        #print("Time before split catchment:",time.perf_counter() - timeBefore)
+        print('Projected X,Y:',self.projectedLng, ',', self.projectedLat)
+        print('Center Projected X,Y:',self.snappedProjectedX, ',', self.snappedProjectedY)
+
+        self.splitCatchmentGeom = self.split_catchment(fdr_grid, catchmentGeom, self.snappedProjectedX, self.snappedProjectedY)
+
+        #print("Time after split catchment:",time.perf_counter() - timeBefore)
+
+        #cleanup
+        del local_gdb
+
+        self.aggregate_geometries()
+
+    def aggregate_geometries(self):
+
+        #merge adjoint Catchment geom with split catchment and were done
+        if self.isLocalGlobal:
+        
+            #apply a small buffer to adjoint catchment to remove sliver
+            self.adjointCatchmentGeom = self.adjointCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
             
-            #create multipolygon container for all watershed parks
-            mergedWatershed = ogr.Geometry(ogr.wkbMultiPolygon)
+            #need to merge splitCatchment and adjointCatchment
+            mergedCatchmentGeom = self.adjointCatchmentGeom.Union(self.splitCatchmentGeom)
             
-            #loop and merge upstream global HUCs
-            for huc_select_feat in hucLayer:
-                upstreamHUCgeom = huc_select_feat.GetGeometryRef()
+        #need to merge all upstream hucs in addition to localGlobal
+        if self.isGlobal:
+        
+            #kick off upstream global search recursive function starting with mergedCatchment
+            self.search_upstream_geometry(mergedCatchmentGeom, 'adjointCatchment')
+            
+            #print("Time before merge:",time.perf_counter() - timeBefore)
+            print('UPSTREAM HUC LIST:', self.upstream_huc_list)
+            
+            if len(self.upstream_huc_list) > 0:
                 
-                #add polygon parts to container
-                if upstreamHUCgeom.GetGeometryName() == 'MULTIPOLYGON':
-                    for geom_part in upstreamHUCgeom:
-                        mergedWatershed.AddGeometry(geom_part)
+                #make sure filter is clear
+                self.hucLayer.SetAttributeFilter(None)
+
+                #set attribute filter 
+                if len(self.upstream_huc_list) == 1:
+                    self.hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + " = '" + self.upstream_huc_list[0] + "'")
+                #'in' operator doesnt work with list len of 1
                 else:
-                    mergedWatershed.AddGeometry(upstreamHUCgeom)
+                    self.hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + ' IN {}'.format(tuple(self.upstream_huc_list)))
+                
+                #create multipolygon container for all watershed parks
+                mergedWatershed = ogr.Geometry(ogr.wkbMultiPolygon)
+                
+                #loop and merge upstream global HUCs
+                for huc_select_feat in self.hucLayer:
+                    upstreamHUCgeom = huc_select_feat.GetGeometryRef()
                     
-            mergedWatershed = mergedWatershed.UnionCascaded()
-            
-            mergedCatchmentGeom =  mergedCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
-            mergedCatchmentGeom = mergedCatchmentGeom.Union(mergedWatershed)
-            
+                    #add polygon parts to container
+                    if upstreamHUCgeom.GetGeometryName() == 'MULTIPOLYGON':
+                        for geom_part in upstreamHUCgeom:
+                            mergedWatershed.AddGeometry(geom_part)
+                    else:
+                        mergedWatershed.AddGeometry(upstreamHUCgeom)
+                        
+                mergedWatershed = mergedWatershed.UnionCascaded()
+                
+                mergedCatchmentGeom =  mergedCatchmentGeom.Buffer(POLYGON_BUFFER_DISTANCE)
+                mergedCatchmentGeom = mergedCatchmentGeom.Union(mergedWatershed)
+                
+            else:
+                print('Something went wrong with global HUC aggregation')
+
+        #create results object
+        self.geojson = self._results()
+
+        if self.isLocal:
+            #if its a local this is all we want to return
+            self.geojson.mergedCatchment = self.geom_to_geojson(self.splitCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref)
         else:
-            print('Something went wrong with global HUC aggregation')
-            
-    # clean close
-    del global_gdb
-    del local_gdb
-    
-    ## ---------------------------------------------------------
-    ## END AGGREGATE GEOMETRIES
-    ## ---------------------------------------------------------
+            self.geojson.mergedCatchment =  self.geom_to_geojson(mergedCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref)
+            self.geojson.adjointCatchment =  self.geom_to_geojson(self.adjointCatchmentGeom, 'adjointCatchment', 10, self.region_ref, self.webmerc_ref)
+        
+        #always write out split catchment
+        self.geojson.splitCatchment =  self.geom_to_geojson(self.splitCatchmentGeom, 'splitCatchment', 10, self.region_ref, self.webmerc_ref)
 
-    timeAfter = time.perf_counter() 
-    totalTime = timeAfter - timeBefore
-    print("Total Time:",totalTime)
+        self.cleanup()
 
-    #create outputs
-    results = Results()
-    if isLocal:
-        #if its a local this is all we want to return
-        results.mergedCatchment = geomToGeoJSON(splitCatchmentGeom, 'mergedCatchment', 10, region_ref, webmerc_ref)
-    else:
-        results.mergedCatchment = geomToGeoJSON(mergedCatchmentGeom, 'mergedCatchment', 10, region_ref, webmerc_ref)
-        results.adjointCatchment = geomToGeoJSON(adjointCatchmentGeom, 'adjointCatchment', 10, region_ref, webmerc_ref)
-    results.splitCatchment = geomToGeoJSON(splitCatchmentGeom, 'splitCatchment', 10, region_ref, webmerc_ref)
-    
-    return results
+        return self.geojson
+        
+    def cleanup(self):
+
+        # clean close
+        del self.global_gdb
+        del self.driver
+        del self.globalStreamsLayer
+        del self.hucLayer
+        del self.hucNetJunctionsLayer
+        del self.region_ref
+        del self.webmerc_ref
+        del self.splitCatchmentGeom
+        del self.globalStreamsHydroIdIndex
+        del self.hucNameFieldIndex
+        del self.hucNetJunctionsIdIndex
 
 if __name__=='__main__':
 
-    # point = (44.00683,-73.74586) #local
-    # point = (44.03115617578595 , -73.71244903077174) #on str but still "local"
-    # point = (44.00431,-73.71348) #localGlobal
-    # point = (43.29139,-73.82705) #global non-nested upstream
-    # point = (42.17209,-73.87555) #global nested upstream
-    # point = (41.00155,-73.89282) #global 8 huc nested upstream
+    timeBefore = time.perf_counter()  
 
-    # point = (43.45338620107029 , -74.50329065322877) # bad catchment geometry (fixed using bounding box method for fdr clip)
-    # point = (41.310936704746936 , -74.51668024063112) # bad split catchment result (fixed by adding snap to FAC>50)
-    # point = (43.31392194207697 , -73.8442397117614) #weird one was aggregation spatially disconnected HUCs (fixed by limited global line search buffer)
-    # point = (42.82741831644657 , -73.93358945846559) #single upstream HUC aggregation issue (fixed by update attributeFilter)
-
-
-    #testing in MA
+    #test site
     point = (42.55415514336133 , -71.50470972061159) #point produces zero area splitCatchment
-    # point = (42.34008482617163, -72.72163867950441)
-    # point = (42.24184837786185 , -72.62126059068201) #massachusetts global on connecticut river
- 
+
     region = 'ma'
     dataPath = 'c:/temp/'
 
     #start main program
-    results = delineateWatershed(point[0],point[1],region,dataPath)
-    
-    #initialize map
-    m = folium.Map(location=[point[0], point[1]],zoom_start=8, tiles='Stamen Terrain')
-    folium.Marker([point[0], point[1]], popup='<i>delienation point</i>').add_to(m)
-    
-    #display all available results
-    for attr, value in results.__dict__.items():
-        if value is not None:
-            layer = folium.GeoJson(value, name=attr).add_to(m)
-            bounds = layer.get_bounds()
+    delineation = Watershed(point[0],point[1],region,dataPath)
+    # results = delineateWatershed(point[0],point[1],region,dataPath)
+    area = round(json.loads(delineation.geojson.mergedCatchment)['properties']['area']*0.00000038610,2)   
+    print("mergedCatchment area:",area)
 
-    #add layer control
-    folium.LayerControl().add_to(m)
-    
-    #zoom map
-    m.fit_bounds(bounds)
-
-    #display folium map
-    #display(m)
+    timeAfter = time.perf_counter() 
+    totalTime = timeAfter - timeBefore
+    print("Total Time:",totalTime)

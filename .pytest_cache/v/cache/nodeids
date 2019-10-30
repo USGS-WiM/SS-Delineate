@@ -1,8 +1,0 @@
-[
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_global_nested_large",
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_global_nested_small",
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_global_non_nested",
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_local",
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_localGlobal",
-  "tests/test_unittest.py::Test_ny_regular_tests::test_ny_local_on_str_no_adjoint"
-]
