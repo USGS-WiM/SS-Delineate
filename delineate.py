@@ -10,7 +10,7 @@
 # gdal, pysheds
 
 ###### CONDA CREATE ENVIRONMENT COMMAND
-#conda create -n delineate python=3.7 gdal pysheds
+#conda create -n delineate python=3.6.8 gdal pysheds
 ###### CONDA CREATE ENVIRONMENT COMMAND
 
 from osgeo import ogr, osr, gdal
