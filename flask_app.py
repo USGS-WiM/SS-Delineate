@@ -13,7 +13,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS, cross_origin
 from datetime import datetime
 import delineate
-import re
 
 app = Flask(__name__)
 cors = CORS(app)
@@ -36,5 +35,5 @@ def main():
     dataPath = 'c:/temp/'
 
     #start main program
-    results = delineate.delineateWatershed(lat,lng,region,dataPath)
-    return results.__dict__
+    results = delineate.Watershed(lat,lng,region,dataPath)
+    return jsonify(results.serialize())

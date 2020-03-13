@@ -48,16 +48,20 @@ class Watershed:
         self.dataPath = dataPath
         self.huc_net_junction_list = []
         self.upstream_huc_list = []
+        self.splitCatchment = None
+        self.adjointCatchment = None
+        self.mergedCatchment = None
         self.driver = ogr.GetDriverByName("OpenFileGDB")
 
         #kick off
         self.get_global() 
 
-    class _results(object):
-        def __init__(self, splitCatchment=None, adjointCatchment=None, mergedCatchment=None):
-            self.splitCatchment = splitCatchment
-            self.adjointCatchment = adjointCatchment
-            self.mergedCatchment = mergedCatchment       
+    def serialize(self):
+        return {
+            'splitCatchment': self.splitCatchment, 
+            'adjointCatchment': self.adjointCatchment,
+            'mergedCatchment': self.mergedCatchment
+        }
 
     def split_catchment(self, flow_dir, geom, x, y): 
 
@@ -114,6 +118,7 @@ class Watershed:
 
     def geom_to_geojson(self, in_geom, name, simplify_tolerance, in_ref, out_ref, write_output=False):
         in_geom = in_geom.Simplify(simplify_tolerance)
+        out_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
         transform = osr.CoordinateTransformation(in_ref, out_ref)
         
@@ -138,15 +143,13 @@ class Watershed:
             }
         }
 
-        geojson = json.dumps(geojson_dict)
-
         if write_output:
             f = open('./' + name + '.geojson','w')
-            f.write(geojson)
+            f.write(json.dumps(geojson_dict))
             f.close()
             print('Exported geojson:', name)
         
-        return geojson
+        return geojson_dict
 
     def search_upstream_geometry(self, geom, name):
 
@@ -258,10 +261,16 @@ class Watershed:
         self.region_ref = self.hucLayer.GetSpatialRef()
         self.webmerc_ref = osr.SpatialReference()
         self.webmerc_ref.ImportFromEPSG(4326)
+
+        #gdal 3 changes require this line: https://github.com/OSGeo/gdal/blob/master/gdal/swig/python/samples/ogr2ogr.py
+        self.webmerc_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
         ctran = osr.CoordinateTransformation(self.webmerc_ref,self.region_ref)
 
         #Transform incoming longitude/latitude to the hucpoly projection
         [self.projectedLng,self.projectedLat,z] = ctran.TransformPoint(self.x,self.y)
+
+        print(self.projectedLng,self.projectedLat)
 
         #Create a point
         inputPointProjected = ogr.Geometry(ogr.wkbPoint)
@@ -278,6 +287,11 @@ class Watershed:
             #store local path info now that we know it
             localDataPath = globalDataPath + hucName + '/'
             localGDB = localDataPath + hucName + '.gdb'
+
+        try:
+            hucName
+        except NameError:
+            print('no hucpoly found')
 
         #clear hucLayer spatial filter
         self.hucLayer.SetSpatialFilter(None)
@@ -380,6 +394,9 @@ class Watershed:
             else:
                 print('point is a local')
 
+        else:
+            #no adjoint catchment
+            print('No adjoint catchment for this point')
 
         #print("Time before split catchment:",time.perf_counter() - timeBefore)
         print('Projected X,Y:',self.projectedLng, ',', self.projectedLat)
@@ -448,22 +465,19 @@ class Watershed:
             else:
                 print('Something went wrong with global HUC aggregation')
 
-        #create results object
-        self.geojson = self._results()
-
         if self.isLocal:
             #if its a local this is all we want to return
-            self.geojson.mergedCatchment = self.geom_to_geojson(self.splitCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref)
+            self.mergedCatchment = self.geom_to_geojson(self.splitCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref, False)
         else:
-            self.geojson.mergedCatchment =  self.geom_to_geojson(mergedCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref)
-            self.geojson.adjointCatchment =  self.geom_to_geojson(self.adjointCatchmentGeom, 'adjointCatchment', 10, self.region_ref, self.webmerc_ref)
+            self.mergedCatchment =  self.geom_to_geojson(mergedCatchmentGeom, 'mergedCatchment', 10, self.region_ref, self.webmerc_ref, False)
+            self.adjointCatchment =  self.geom_to_geojson(self.adjointCatchmentGeom, 'adjointCatchment', 10, self.region_ref, self.webmerc_ref, False)
         
         #always write out split catchment
-        self.geojson.splitCatchment =  self.geom_to_geojson(self.splitCatchmentGeom, 'splitCatchment', 10, self.region_ref, self.webmerc_ref)
+        self.splitCatchment =  self.geom_to_geojson(self.splitCatchmentGeom, 'splitCatchment', 10, self.region_ref, self.webmerc_ref, False)
 
         self.cleanup()
 
-        return self.geojson
+        return
         
     def cleanup(self):
 
@@ -485,15 +499,13 @@ if __name__=='__main__':
     timeBefore = time.perf_counter()  
 
     #test site
-    point = (42.55415514336133 , -71.50470972061159) #point produces zero area splitCatchment
-
-    region = 'ma'
+    point = (44.00683,-73.74586) #point produces zero area splitCatchment
+    region = 'ny'
     dataPath = 'c:/temp/'
 
     #start main program
     delineation = Watershed(point[0],point[1],region,dataPath)
-    # results = delineateWatershed(point[0],point[1],region,dataPath)
-    area = round(json.loads(delineation.geojson.mergedCatchment)['properties']['area']*0.00000038610,2)   
+    area = round(delineation.mergedCatchment['properties']['area']*0.00000038610,2)   
     print("mergedCatchment area:",area)
 
     timeAfter = time.perf_counter() 
