@@ -29,7 +29,7 @@ This application is a fully open source solution to delineating drainage basins 
 ## Application setup
 Install required packages
 ```
-conda create -n delineate python=3.6.8 gdal pysheds
+conda create -n delineate python=3.7 gdal pysheds
 ```
 
 ##  Get Started
@@ -38,3 +38,17 @@ You should now be able to run the script at a predefined sample site by running:
 conda activate delineate
 python delineate.py
 ```
+
+##  Flask Setup
+Install flask dependecies
+```
+conda install flasl flask-cors
+```
+
+Steps to start flask dev server:
+
+* start miniconda (start button, type 'mini' it should come up)  
+* type `conda activate delineate`
+* navigate to d:\applications\ss-delineate
+* type `set FLASK_APP=flask_app.py`
+* run flask app `flask run`

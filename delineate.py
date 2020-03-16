@@ -135,6 +135,8 @@ class Watershed:
         #get area in local units
         area = in_geom.GetArea()
 
+        print('processing: ' + name + ' area: ' + str(area*0.00000038610))
+
         geojson_dict = {
             "type": "Feature",
             "geometry": geom_json,
@@ -499,7 +501,7 @@ if __name__=='__main__':
     timeBefore = time.perf_counter()  
 
     #test site
-    point = (44.00683,-73.74586) #point produces zero area splitCatchment
+    point = (42.17209,-73.87555) #point produces zero area splitCatchment
     region = 'ny'
     dataPath = 'c:/temp/'
 
