@@ -32,7 +32,7 @@ def main():
     lng = float(request.args.get('lng'))
 
     print(region,lat,lng)
-    dataPath = 'c:/temp/'
+    dataPath = 'C:/NYBackup/GitHub/ss-delineate/data/'
 
     #start main program
     results = delineate.Watershed(lat,lng,region,dataPath)

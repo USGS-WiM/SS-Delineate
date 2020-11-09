@@ -67,6 +67,7 @@ class Watershed:
 
         #method to use catchment bounding box instead of exact geom
         minX, maxX, minY, maxY = geom.GetEnvelope()
+        print('HERE', minX, minY, maxX, maxY)
         gdal.Warp('/vsimem/fdr.tif', flow_dir, outputBounds=[minX, minY, maxX, maxY])
 
         #start pysheds catchment delineation
@@ -501,9 +502,9 @@ if __name__=='__main__':
     timeBefore = time.perf_counter()  
 
     #test site
-    point = (42.17209,-73.87555) #point produces zero area splitCatchment
+    point = (44.00683,-73.74586)
     region = 'ny'
-    dataPath = 'c:/temp/'
+    dataPath = 'C:/NYBackup/GitHub/ss-delineate/data/'
 
     #start main program
     delineation = Watershed(point[0],point[1],region,dataPath)

@@ -1,6 +1,5 @@
 {
-    "terminal.integrated.shellArgs.windows": ["/K", "C:\\Users\\marsmith\\miniconda\\Scripts\\activate.bat C:\\Users\\marsmith\\miniconda & conda activate delineate"],
-    "python.pythonPath": "C:\\Users\\marsmith\\miniconda\\envs\\delineate1\\python.exe",
+    "python.pythonPath": "C:\\Users\\marsmith\\miniconda\\envs\\delineate\\python.exe",
     "python.terminal.activateEnvironment": true,
     "python.testing.unittestArgs": [
         "-v",
@@ -12,4 +11,5 @@
     "python.testing.pytestEnabled": false,
     "python.testing.nosetestsEnabled": false,
     "python.testing.unittestEnabled": true,
+    "liveServer.settings.port": 5501,
 }
