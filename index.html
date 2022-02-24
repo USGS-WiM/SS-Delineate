@@ -78,7 +78,7 @@ $(document).ready(function () {
     var url = 'https://gis.streamstats.usgs.gov/arcgis/rest/services/StreamStats/stateServices/MapServer';
     streamGridLayer = L.esri.dynamicMapLayer({
         url: url,
-        layers: [99,59]
+        layers: [96, 99, 59]  // OH: 99, MD: 59
     }).addTo(map);
     layerControl.addOverlay(streamGridLayer , "str900");
 
@@ -107,7 +107,7 @@ function validatePoint(e) {
 
     if (map.getZoom() < 15) return;
 
-    streamGridLayer.identify().on(map).at(e.latlng).returnGeometry(false).tolerance(5).layers('visible:99,59')
+    streamGridLayer.identify().on(map).at(e.latlng).returnGeometry(false).tolerance(5).layers('visible:99,59, 96')
         .run(function (error, featureCollection, response) {
             console.log(featureCollection, response)
             toastr.clear(checkPoint);
@@ -118,7 +118,8 @@ function validatePoint(e) {
             if (response.results[0].attributes['Pixel Value'] === '1') {
 
                 if (response.results[0].layerId == 59) region = 'ma';
-                if (response.results[0].layerId == 99) region = 'ny';
+                if (response.results[0].layerId == 99) region = 'oh';
+                if (response.results[0].layerId == 96) region = 'ny';
                 delineatePoint(e)
             }
             else {

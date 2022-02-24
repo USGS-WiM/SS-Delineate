@@ -26,14 +26,14 @@ def home():
 @app.route("/delineate")
 @cross_origin(origin='*')
 def main():
-
+    
     region = request.args.get('region')
     lat = float(request.args.get('lat'))
     lng = float(request.args.get('lng'))
-
+    
     print(region,lat,lng)
-    dataPath = 'C:/NYBackup/GitHub/ss-delineate/data/'
-
+    dataPath = f'C:/Users/ahopkins/streamstats/data/'
+    
     #start main program
     results = delineate.Watershed(lat,lng,region,dataPath)
     return jsonify(results.serialize())

@@ -67,22 +67,25 @@ class Watershed:
 
         #method to use catchment bounding box instead of exact geom
         minX, maxX, minY, maxY = geom.GetEnvelope()
-        print('HERE', minX, minY, maxX, maxY)
-        gdal.Warp('/vsimem/fdr.tif', flow_dir, outputBounds=[minX, minY, maxX, maxY])
+        # print('HERE', minX, minY, maxX, maxY)
+        gdal.Warp('./vsimem/fdr.tif', flow_dir, outputBounds=[minX, minY, maxX, maxY])
 
-        #start pysheds catchment delineation
-        grid = Grid.from_raster('/vsimem/fdr.tif', data_name='dir')
+        # Instantiate a grid from the clipped fdr raster
+        grid = Grid.from_raster('./vsimem/fdr.tif', data_name='dir')
 
-        #get catchment with pysheds
-        grid.catchment(data='dir', x=x, y=y, out_name='catch', recursionlimit=15000, xytype='label')
-
+        # Read the fdr raster
+        fdr = grid.read_raster('./vsimem/fdr.tif')
+        
+        # Delineate catchment with pysheds
+        catch = grid.catchment(fdir=fdr, x=x, y=y, out_name='catch', recursionlimit=15000, xytype='label')
+        
         # Clip the bounding box to the catchment
-        grid.clip_to('catch')
+        grid.clip_to(catch)
 
         #some sort of strange raster to polygon conversion using rasterio method
         shapes = grid.polygonize()
 
-        #get split Catchment geometry
+        # get split Catchment geometry
         print('Split catchment complete')
         split_geom = ogr.Geometry(ogr.wkbPolygon)
 
@@ -203,7 +206,7 @@ class Watershed:
     
     def get_global(self):
 
-        globalDataPath = self.dataPath + self.region + '/archydro/'
+        globalDataPath = f'{self.dataPath}{self.region}/archydro/'
         self.global_gdb = None
 
         # opening the FileGDB
