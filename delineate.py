@@ -18,15 +18,7 @@ from pysheds.grid import Grid
 import time
 import json
 
-#arguments
-GLOBAL_GDB_LIST = ['global.GDB','global.gdb']
-HUCPOLY_LAYER = 'hucpoly'
-HUCPOLY_LAYER_ID = 'NAME'
-HUCPOLY_LAYER_JUNCTION_ID = 'JunctionID'
-GLOBAL_STREAM_LAYER_LIST = ['streams', 'streams3d']
-GLOBAL_STREAM_LAYER_ID = 'HydroID'
-HUC_NET_JUNCTIONS_LAYER_LIST = ['Huc_net_Junctions3D','Huc_net_Junctions']
-HUC_NET_JUNCTIONS_LAYER_ID_LIST = ['Point2DID', 'HydroID']
+#arguments not dependent on region
 CATCHMENT_LAYER = 'Catchment'
 CATCHMENT_LAYER_ID = 'GridID'
 ADJOINT_CATCHMENT_LAYER = 'AdjointCatchment'
@@ -36,6 +28,13 @@ POLYGON_BUFFER_DISTANCE = 1 # used for eliminating slivers when merging polygon 
 FAC_SNAP_THRESHOLD = 900 
 
 class Watershed:
+    '''Returns a delineated basin from a query point.'''
+    # init() -> get_global() -> get_local() -> retrieve_pixel_value()
+    #                                 |------> split_catchment()
+    #                                 |------> aggregate_geometries() -> search_upstream_geometry()
+    #                                                   |--------------> geom_to_geojson()
+    #                                                   |--------------> cleanup()
+
 
     ogr.UseExceptions()
     gdal.UseExceptions() 
@@ -53,6 +52,62 @@ class Watershed:
         self.mergedCatchment = None
         self.driver = ogr.GetDriverByName("OpenFileGDB")
 
+        # Set archydro folder names based on inout region (state)
+        # Global Geodatabase
+        self.global_gdb = 'global.gdb'
+        if region in ['ky', 'ms', 'nc', 'ut', 'va']:
+            self.global_gdb = 'Global.gdb'
+        if region is 'ny':
+            self.global_gdb = 'global.GDB'
+
+        # Hucpoly layer:
+        self.hucLayer = 'hucpoly'
+        if region is 'va':
+            self.hucLayer = 'HucPoly'
+
+        self.hucNameFieldIndex = 'Name'
+        if region in ['de', 'ia', 'md', 'ny', 'ok']:
+            self.hucNameFieldIndex = 'NAME'
+
+        self.hucLayerJunctionID = 'JunctionID'
+
+        # Streams Layer
+        self.globalStreamsLayer = 'streams'
+        if region in ['oh']:
+            self.globalStreamsLayer = 'Streams3d'
+        if region in ['ny']:
+            self.globalStreamsLayer = 'streams3D'
+        if region in ['ar', 'co', 'ct', 'ga', 'ia', 'id', 'il', 'in', 'mn', 'mo', 'ms', 'nd', 'nh', 'nj', 'ok', 'pr', 'ri', 'sc', 'sd', 'tn']:
+            self.globalStreamsLayer = 'Streams3D'
+
+        self.globalStreamsHydroIdIndex = 'Line2DID'
+        if region in ['ak', 'ks', 'me', 'mt', 'nm', 'pa', 'va', 'wi']:
+            self.globalStreamsHydroIdIndex = 'HYDROID'
+        if region in ['al', 'az', 'ca', 'de', 'hi', 'ky', 'ma', 'md', 'nc', 'ut', 'vt', 'wa', 'ar', 'co', 'ct', 'pr', 'nd', 'ny']:
+            self.globalStreamsHydroIdIndex = 'HydroID'
+        
+        # Junctions Point layer
+        self.hucNetJunctionsLayer = 'Point3D'
+        if region in ['tn']:
+            self.hucNetJunctionsLayer = 'Junction3D'
+        if region in ['ak', 'al', 'az', 'ca', 'de', 'ks', 'ky', 'ma', 'md', 'me', 'mt', 'nm', 'pa', 'ut', 'vt', 'wi', 'ct', 'or']:
+            self.hucNetJunctionsLayer = 'huc_net_Junctions'
+        if region in ['va']:
+            self.hucNetJunctionsLayer = 'Huc_net_Junctions'
+        if region in ['wa']:
+            self.hucNetJunctionsLayer = 'HUC_Net_Junctions'
+        if region in ['ny']:
+            self.hucNetJunctionsLayer = 'huc_net_Junctions3D'
+
+        self.hucNetJunctionsIdIndex = 'Point2DID'
+        if region in ['ak', 'ks', 'me', 'mt', 'nm', 'pa', 'wi', 'or']:
+            self.hucNetJunctionsIdIndex = 'HYDROID'
+        if region in ['al', 'az', 'ca', 'de', 'ky', 'ma', 'md', 'ut', 'va', 'vt', 'ct', 'ms']:
+            self.hucNetJunctionsIdIndex = 'HydroID'
+        if region in ['il']:
+            self.hucNetJunctionsIdIndex = 'OID'
+
+
         #kick off
         self.get_global() 
 
@@ -64,6 +119,7 @@ class Watershed:
         }
 
     def split_catchment(self, flow_dir, geom, x, y): 
+        """Returns split_geom"""
 
         #method to use catchment bounding box instead of exact geom
         minX, maxX, minY, maxY = geom.GetEnvelope()
@@ -95,7 +151,10 @@ class Watershed:
         return split_geom
 
     def retrieve_pixel_value(self, geo_coord, raster):
-        dataset = gdal.Open(raster)
+        """Returns value of raster, and the coords of the top left of the cell."""
+
+        # Open str900 grid
+        dataset = gdal.Open(raster) 
         transform = dataset.GetGeoTransform()
         xOrigin = transform[0]
         yOrigin = transform[3]
@@ -171,8 +230,8 @@ class Watershed:
         for hucNetJunctions_feat in self.hucNetJunctionsLayer:
             self.hucNetJunctionsID = hucNetJunctions_feat.GetFieldAsString(self.hucNetJunctionsIdIndex)
             self.hucNetJunctionsFeat = hucNetJunctions_feat
-            s = (HUCPOLY_LAYER_JUNCTION_ID + " = " + self.hucNetJunctionsID + "")
-            #print('huc search string:',s)
+            s = (self.hucLayerJunctionID + " = " + self.hucNetJunctionsID + "")
+            print('huc search string:',s)
             if s not in self.huc_net_junction_list:
                 self.huc_net_junction_list.append(s)
 
@@ -187,13 +246,14 @@ class Watershed:
         #search for upstream connected HUC using huc_net_junctions
         operator = " OR "
         huc_net_junction_string = operator.join(self.huc_net_junction_list) 
+        print('huc_net_junction_string', huc_net_junction_string)
         self.hucLayer.SetAttributeFilter(None)
         self.hucLayer.SetAttributeFilter(huc_net_junction_string)
 
         #loop over upstream HUCs
         for huc_select_feat in self.hucLayer:
             huc_name = huc_select_feat.GetFieldAsString(self.hucNameFieldIndex)
-            #print('found huc:',huc_name)
+            print('found huc:',huc_name)
             
             if huc_name not in self.upstream_huc_list:
                 upstreamHUC = huc_select_feat.GetGeometryRef()
@@ -205,63 +265,60 @@ class Watershed:
         return       
     
     def get_global(self):
+        """Find the HUC the point falls in and kicks off the get_local function.
+        ---------------------------------------------------------------------------
+        defines: global_gdb, huclayer, globalStreamsLayer, globalStreamsHydroIdIndex,
+        hucNetJunctionsLayer, hucNetJunctionsIdIndex, region_ref, webmerc_ref
+        """
 
         globalDataPath = f'{self.dataPath}{self.region}/archydro/'
-        self.global_gdb = None
 
         # opening the FileGDB
-        for self.global_gdb in GLOBAL_GDB_LIST:
-            globalGDB = globalDataPath + self.global_gdb
-            self.global_gdb = self.driver.Open(globalGDB, 0)
-            if self.global_gdb is None:
-                continue    
-            break
+        globalGDB = globalDataPath + self.global_gdb
+        self.global_gdb = self.driver.Open(globalGDB, 0)
+            
         if self.global_gdb is None:
             print('ERROR: Missing global gdb for:', self.region)
 
         print('y,x:',self.y,',',self.x,'\nRegion:',self.region,'\nGlobalDataPath:',globalDataPath,'\nGlobalGDB:',globalGDB)
 
-        #global HUC layer (should be only one possibility)
-        self.hucLayer = self.global_gdb.GetLayer(HUCPOLY_LAYER)
+        # set global HUC layer (should be only one possibility)
+        self.hucLayer = self.global_gdb.GetLayer(self.hucLayer)
         if self.hucLayer is None:
             print('ERROR: Missing the hucpoly layer for:', self.region)
 
-        try:
-            self.hucNameFieldIndex = self.hucLayer.GetLayerDefn().GetFieldIndex(HUCPOLY_LAYER_ID)
-        except ValueError:
-            print('ERROR: Missing hucNameFieldIndex:', HUCPOLY_LAYER_ID)
+        # try:
+        #     print('self.hucNameFieldIndex:', self.hucNameFieldIndex, type(self.hucNameFieldIndex))
+        #     self.hucNameFieldIndex = self.hucLayer.GetLayerDefn().GetFieldIndex(self.hucNameFieldIndex)
+        #     print('self.hucNameFieldIndex:', self.hucNameFieldIndex, type(self.hucNameFieldIndex))
+        # except ValueError:
+        #     print('ERROR: Missing hucNameFieldIndex:', self.hucNameFieldIndex)
 
-        #global streams layer (multiple possibilities)     
-        for globalStreamsLayerName in GLOBAL_STREAM_LAYER_LIST:
-            self.globalStreamsLayer = self.global_gdb.GetLayer(globalStreamsLayerName)
-            if self.globalStreamsLayer is None:
-                continue    
-            break
+        # set global streams layer (multiple possibilities)
+        self.globalStreamsLayer = self.global_gdb.GetLayer(self.globalStreamsLayer)
+            
         if self.globalStreamsLayer is None:
             print('ERROR: Missing global streams layer for:', self.region)
 
-        try:
-            self.globalStreamsHydroIdIndex = self.globalStreamsLayer.GetLayerDefn().GetFieldIndex(GLOBAL_STREAM_LAYER_ID)
-        except ValueError:
-            print('ERROR: globalStreamsHydroIdIndex:', HUCPOLY_LAYER_ID)
+        # try:
+        #     print('self.globalStreamsHydroIdIndex:', self.globalStreamsHydroIdIndex, type(self.globalStreamsHydroIdIndex))
+        #     self.globalStreamsHydroIdIndex = self.globalStreamsLayer.GetLayerDefn().GetFieldIndex(self.globalStreamsHydroIdIndex)
+        #     print('self.globalStreamsHydroIdIndex:', self.globalStreamsHydroIdIndex, type(self.globalStreamsHydroIdIndex))
+        # except ValueError:
+        #     print('ERROR: globalStreamsHydroIdIndex:', self.hucNameFieldIndex)
 
-        #huc_net_junctions layer (multiple possibilities)
-        for hucNetJunctionsLayerName in HUC_NET_JUNCTIONS_LAYER_LIST:
-            self.hucNetJunctionsLayer = self.global_gdb.GetLayer(hucNetJunctionsLayerName)
-            if self.hucNetJunctionsLayer is None:
-                continue
-            break
+        # set huc_net_junctions layer 
+        self.hucNetJunctionsLayer = self.global_gdb.GetLayer(self.hucNetJunctionsLayer)
         if self.hucNetJunctionsLayer is None:
             print('ERROR: Missing huc_net_junctions layer for:', self.region)
 
-        #looks like there are also multiple possibilities for the huc_net_junctions layerID field
-        for hucNetJunctionsLayerID in HUC_NET_JUNCTIONS_LAYER_ID_LIST:
-            self.hucNetJunctionsIdIndex = self.hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(hucNetJunctionsLayerID)
-            if self.hucNetJunctionsIdIndex == -1:
-                continue
-            break
-        if self.hucNetJunctionsIdIndex == -1:
-            print('ERROR: huc_net_junctions ID not found for:', region)
+        # #looks like there are also multiple possibilities for the huc_net_junctions layerID field
+        # print('self.hucNetJunctionsIdIndex:', self.hucNetJunctionsIdIndex, type(self.hucNetJunctionsIdIndex))
+        # self.hucNetJunctionsIdIndex = self.hucNetJunctionsLayer.GetLayerDefn().GetFieldIndex(self.hucNetJunctionsIdIndex)
+        # print('self.hucNetJunctionsIdIndex:', self.hucNetJunctionsIdIndex, type(self.hucNetJunctionsIdIndex))
+            
+        # if self.hucNetJunctionsIdIndex == -1:
+        #     print('ERROR: huc_net_junctions ID not found for:', region)
 
         #Create a transformation between this and the hucpoly projection
         self.region_ref = self.hucLayer.GetSpatialRef()
@@ -306,6 +363,11 @@ class Watershed:
         self.get_local(inputPointProjected, localDataPath, localGDB)
 
     def get_local(self, inputPointProjected, localDataPath, localGDB):
+        """ Opens local catchment gdb. Then runs retrieve_pixel_value, splitcatchment, aggregate_geometries functions.
+        ----------------------------------------------------------------
+        sets: snappedProjectedX, snappedProjectedY, adjointCatchmentGeom, splitCatchmentGeom
+
+        """
             
         fdr_grid = localDataPath + 'fdr'
         str_grid = localDataPath + 'str'
@@ -326,7 +388,7 @@ class Watershed:
         # opening the FileGDB
         try:
             local_gdb = self.driver.Open(localGDB, 0)
-        except e:
+        except:
             print('ERROR: Check to make sure you have a local gdb for:', hucName)
 
         #define local data layers
@@ -418,6 +480,7 @@ class Watershed:
         self.aggregate_geometries()
 
     def aggregate_geometries(self):
+        """Merges geometries together and return as geosjon."""
 
         #merge adjoint Catchment geom with split catchment and were done
         if self.isLocalGlobal:
@@ -436,6 +499,7 @@ class Watershed:
             
             #print("Time before merge:",time.perf_counter() - timeBefore)
             print('UPSTREAM HUC LIST:', self.upstream_huc_list)
+            print('self.hucNameFieldIndex:', self.hucNameFieldIndex, type(self.hucNameFieldIndex))
             
             if len(self.upstream_huc_list) > 0:
                 
@@ -444,10 +508,10 @@ class Watershed:
 
                 #set attribute filter 
                 if len(self.upstream_huc_list) == 1:
-                    self.hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + " = '" + self.upstream_huc_list[0] + "'")
+                    self.hucLayer.SetAttributeFilter(self.hucNameFieldIndex + " = '" + self.upstream_huc_list[0] + "'")
                 #'in' operator doesnt work with list len of 1
                 else:
-                    self.hucLayer.SetAttributeFilter(HUCPOLY_LAYER_ID + ' IN {}'.format(tuple(self.upstream_huc_list)))
+                    self.hucLayer.SetAttributeFilter(self.hucNameFieldIndex + ' IN {}'.format(tuple(self.upstream_huc_list)))
                 
                 #create multipolygon container for all watershed parks
                 mergedWatershed = ogr.Geometry(ogr.wkbMultiPolygon)
@@ -493,6 +557,7 @@ class Watershed:
         del self.globalStreamsLayer
         del self.hucLayer
         del self.hucNetJunctionsLayer
+        del self.hucLayerJunctionID
         del self.region_ref
         del self.webmerc_ref
         del self.splitCatchmentGeom
@@ -507,7 +572,7 @@ if __name__=='__main__':
     #test site
     point = (44.00683,-73.74586)
     region = 'ny'
-    dataPath = 'C:/NYBackup/GitHub/ss-delineate/data/'
+    dataPath = 'C:/Users/ahopkins/streamstats/data/'
 
     #start main program
     delineation = Watershed(point[0],point[1],region,dataPath)
